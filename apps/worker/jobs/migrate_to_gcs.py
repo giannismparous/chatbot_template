@@ -18,6 +18,8 @@ PLATFORM_REGISTRY_KEY = "platform/registry.yaml"
 
 def _should_skip(relative: Path) -> bool:
     parts = relative.parts
+    if len(parts) >= 2 and parts[0] == "tests" and parts[1] == "output":
+        return True
     if any(part in SKIP_DIR_NAMES for part in parts):
         return True
     if relative.name == ".gitkeep":

@@ -13,7 +13,11 @@ from packages.core.control_plane.models import ConfigMetaRecord
 from packages.core.config.loader import TenantConfigLoader
 from packages.core.stack.factory import project_root
 from packages.core.storage.keys import gcs_object_name, gcs_object_name_candidates
-from packages.core.storage.tenant_cache_hydrator import hydrate_client_config
+from packages.core.storage.tenant_cache_hydrator import (
+    hydrate_client_config,
+    hydrate_client_eval_assets,
+)
+from packages.core.eval.loader import load_eval_suite, load_eval_cases
 from packages.core.tenant.paths import client_config_dir
 
 MINIMAL_CLIENT_YAML = b"""client_id: default
@@ -134,6 +138,88 @@ def test_hydrate_then_config_loader_succeeds_with_empty_cache(tmp_path: Path) ->
     )
     merged = loader.load("default")
     assert merged.client_id == "default"
+
+
+MINIMAL_EVAL_SUITE = b"""version: 1
+client_id: default
+target:
+  index_scope: pending
+  mode: hybrid_local
+thresholds:
+  retrieval_min_pass_rate: 0.9
+  answer_min_pass_rate: 0.85
+  safety_min_pass_rate: 1.0
+  citation_min_pass_rate: 1.0
+required_categories:
+  - answer
+freshness_hours: 24
+regulated:
+  require_citation_tests: false
+export:
+  reviewer:
+    formats: [csv]
+    bundle_visibility: public_only
+"""
+
+MINIMAL_EVAL_CASE = b"""cases:
+  - id: smoke_answer
+    category: answer
+    message: hello
+    expect:
+      expected_contains: [hello]
+"""
+
+
+def test_hydrate_eval_assets_from_gcs(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    store = _make_gcs_store(
+        cache,
+        {
+            gcs_object_name("default", "tests/eval_suite.yaml"): MINIMAL_EVAL_SUITE,
+            gcs_object_name("default", "tests/cases/smoke.yaml"): MINIMAL_EVAL_CASE,
+            gcs_object_name("default", "tests/output/eval_report.json"): b'{"status":"pass"}',
+        },
+    )
+    count = hydrate_client_eval_assets(client_id="default", file_store=store)
+    assert count >= 2
+    assert not (cache / "default" / "tests" / "output" / "eval_report.json").exists()
+    suite = load_eval_suite(cache, "default")
+    assert suite.client_id == "default"
+    cases = load_eval_cases(cache, "default")
+    assert any(case.id == "smoke_answer" for case in cases)
+
+
+def test_ensure_firebase_eval_hydration_loads_suite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from packages.core.stack import factory
+    from packages.core.storage.tenant_cache_hydrator import ensure_firebase_eval_assets_hydrated
+
+    cache = tmp_path / "cache"
+    gcs_store = _make_gcs_store(
+        cache,
+        {
+            gcs_object_name("default", "config/client.yaml"): MINIMAL_CLIENT_YAML,
+            gcs_object_name("default", "tests/eval_suite.yaml"): MINIMAL_EVAL_SUITE,
+            gcs_object_name("default", "tests/cases/smoke.yaml"): MINIMAL_EVAL_CASE,
+        },
+    )
+
+    monkeypatch.setenv("STACK_PROFILE", "firebase")
+    monkeypatch.setenv("FIRESTORE_CONTROL_PLANE", "false")
+    monkeypatch.setenv("GCS_REGISTRY_FALLBACK", "true")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "secret")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "demo")
+    monkeypatch.setenv("GCS_BUCKET", "simasia-chatbot-prod-demo")
+    monkeypatch.setenv("TENANT_CACHE_ROOT", str(cache))
+    monkeypatch.setenv(
+        "CLIENT_REGISTRY_PATH",
+        str(project_root() / "tests" / "fixtures" / "registry.yaml"),
+    )
+    monkeypatch.setattr(factory, "build_file_store", lambda profile, stack_yaml, root: gcs_store)
+
+    ensure_firebase_eval_assets_hydrated(client_id="default")
+    suite = load_eval_suite(cache, "default")
+    assert suite.client_id == "default"
+    assert (cache / "default" / "tests" / "cases" / "smoke.yaml").is_file()
 
 
 def test_firebase_build_stack_hydrates_default_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

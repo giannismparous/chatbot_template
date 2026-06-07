@@ -104,8 +104,9 @@ Dry-run is the default (omit `--apply`). Paths resolve from repo root.
 
 Uploads `clients/{client_id}/...` (canonical GCS layout via `gcs_object_name`) and `platform/registry.yaml`.
 
-**GCS layout (canonical):** `gs://BUCKET/clients/{client_id}/config/...`  
-Legacy `gs://BUCKET/{client_id}/config/...` is read at runtime for backward compatibility but new migrations must use the canonical path.
+**GCS layout (canonical):** `gs://BUCKET/clients/{client_id}/...`  
+Legacy `gs://BUCKET/{client_id}/...` is read at runtime for backward compatibility.  
+Runtime hydrates `config/*` on API startup; eval hydrates `tests/eval_suite.yaml`, `tests/cases/**`, optional `tests/fixtures/**` (never `tests/output/**`).
 
 
 

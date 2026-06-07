@@ -30,6 +30,20 @@ def test_migrate_dry_run_counts_objects(tmp_path: Path) -> None:
     assert plan["total_bytes"] == len("hello")
 
 
+def test_migrate_skips_tests_output(tmp_path: Path) -> None:
+    clients_root = tmp_path / "clients"
+    tenant = clients_root / "default"
+    (tenant / "tests" / "output").mkdir(parents=True)
+    (tenant / "tests" / "output" / "eval_report.json").write_text("{}", encoding="utf-8")
+    (tenant / "tests" / "cases").mkdir(parents=True)
+    (tenant / "tests" / "cases" / "smoke.yaml").write_text("cases: []\n", encoding="utf-8")
+
+    objects = _iter_local_objects(clients_root, "default")
+    keys = [key for key, _ in objects]
+    assert "tests/cases/smoke.yaml" in keys
+    assert not any(key.startswith("tests/output/") for key in keys)
+
+
 def test_migrate_rejects_invalid_client_id(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         _iter_local_objects(tmp_path / "clients", "../bad")

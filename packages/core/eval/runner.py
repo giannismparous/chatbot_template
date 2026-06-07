@@ -33,6 +33,9 @@ def run_eval(
     allow_internal_bundle: bool = False,
 ) -> tuple[EvalReport, Path]:
     cid = safe_client_id(client_id)
+    from packages.core.storage.tenant_cache_hydrator import ensure_firebase_eval_assets_hydrated
+
+    ensure_firebase_eval_assets_hydrated(client_id=cid)
     config_loader = TenantConfigLoader(
         clients_root=clients_root,
         domain_packs_root=project_root() / "packages" / "domain_packs",

@@ -89,6 +89,9 @@ def check_deploy_gate(
     if not manifest.pending:
         return DeployGateResult(False, "no_pending_version", "No pending index version to deploy")
 
+    from packages.core.storage.tenant_cache_hydrator import ensure_firebase_eval_assets_hydrated
+
+    ensure_firebase_eval_assets_hydrated(client_id=client_id)
     merged = config_loader.load(client_id)
     regulated_mode = bool((merged.client or {}).get("regulated_mode", False))
     suite = load_eval_suite(clients_root, client_id)
