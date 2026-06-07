@@ -54,9 +54,17 @@ def build_tenant_config_loader() -> TenantConfigLoader:
 
 def build_orchestrator(config_loader: TenantConfigLoader) -> ChatOrchestrator:
     default_client = os.getenv("DEFAULT_CLIENT_ID", "default")
+    stack = get_stack()
+    if stack.profile == "firebase":
+        from packages.core.storage.tenant_cache_hydrator import hydrate_client_config
+
+        hydrate_client_config(
+            client_id=default_client,
+            file_store=stack.file_store,
+            config_meta_store=stack.config_meta_store,
+        )
     merged = config_loader.load(default_client)
     source_weights = merged.client.get("source_weights") or {}
-    stack = get_stack()
     clients_root = stack.config_store.get_clients_root()
 
     connectors = {

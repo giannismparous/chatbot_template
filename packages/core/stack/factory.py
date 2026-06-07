@@ -31,6 +31,7 @@ from packages.core.ports.job_store import JobStore
 from packages.core.ports.metrics_store import MetricsStore
 from packages.core.ports.session_store import SessionStore
 from packages.core.ports.trace_store import TraceStore
+from packages.core.storage.tenant_cache_hydrator import hydrate_startup_tenant_configs
 from packages.core.storage.tenant_storage import TenantStorage
 
 
@@ -216,6 +217,14 @@ def build_stack(profile: str | None = None) -> Stack:
     metrics_store = LocalSqliteMetricsStore(db_path)
     session_store = LocalSqliteSessionStore(db_path)
     job_runner = build_job_runner(selected, tenant_storage, job_store)
+
+    if selected == "firebase" and isinstance(file_store, GcsFileStore):
+        default_client = os.getenv("DEFAULT_CLIENT_ID", "default").strip() or "default"
+        hydrate_startup_tenant_configs(
+            file_store=file_store,
+            config_meta_store=config_meta_store,
+            client_ids=[default_client],
+        )
 
     return Stack(
         profile=selected,

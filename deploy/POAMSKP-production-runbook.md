@@ -443,6 +443,8 @@ python -m apps.worker.jobs.migrate_to_gcs --client-id default --apply
 
 Paths resolve from repo root (`data/clients`, `packages/config/clients/registry.yaml`) regardless of shell CWD.
 
+**Canonical GCS layout:** `gs://${BUCKET}/clients/default/...` (matches `migrate_to_gcs`). Runtime also reads legacy `gs://${BUCKET}/default/...` if present. On firebase startup, config files are **hydrated** into `${TENANT_CACHE_ROOT}/default/config/` before the API loads tenant config — no manual `gsutil` copy required.
+
 Verify object count:
 
 ```bash

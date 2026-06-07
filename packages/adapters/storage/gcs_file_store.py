@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from packages.core.ports.file_store import FileStore
-from packages.core.storage.keys import gcs_object_name, validate_relative_key
+from packages.core.storage.keys import (
+    gcs_client_prefix,
+    gcs_list_prefixes,
+    gcs_object_name,
+    gcs_object_name_candidates,
+    validate_relative_key,
+)
 from packages.core.tenant.paths import safe_client_id
 
 
@@ -57,14 +63,22 @@ class GcsFileStore(FileStore):
             raise ValueError(f"relative_key escapes tenant cache: {relative_key!r}")
         return path
 
+    def _resolve_blob(self, client_id: str, relative_key: str):
+        last_error: FileNotFoundError | None = None
+        for blob_name in gcs_object_name_candidates(client_id, relative_key):
+            blob = self._bucket().blob(blob_name)
+            if blob.exists():
+                return blob
+            last_error = FileNotFoundError(relative_key)
+        if last_error is not None:
+            raise last_error
+        raise FileNotFoundError(relative_key)
+
     def _download_if_needed(self, client_id: str, relative_key: str) -> Path:
         path = self._cache_path(client_id, relative_key)
         if path.is_file():
             return path
-        blob_name = gcs_object_name(client_id, relative_key)
-        blob = self._bucket().blob(blob_name)
-        if not blob.exists():
-            raise FileNotFoundError(relative_key)
+        blob = self._resolve_blob(client_id, relative_key)
         path.parent.mkdir(parents=True, exist_ok=True)
         blob.download_to_filename(str(path))
         return path
@@ -73,8 +87,11 @@ class GcsFileStore(FileStore):
         path = self._cache_path(client_id, relative_key)
         if path.is_file():
             return True
-        blob = self._bucket().blob(gcs_object_name(client_id, relative_key))
-        return bool(blob.exists())
+        try:
+            self._resolve_blob(client_id, relative_key)
+            return True
+        except FileNotFoundError:
+            return False
 
     def read_bytes(self, client_id: str, relative_key: str) -> bytes:
         return self._download_if_needed(client_id, relative_key).read_bytes()
@@ -112,35 +129,47 @@ class GcsFileStore(FileStore):
         if blob.exists():
             blob.delete()
 
+    def _blob_relative_key(self, client_id: str, blob_name: str) -> str | None:
+        cid = safe_client_id(client_id)
+        canonical_root = f"{gcs_client_prefix()}/{cid}/"
+        legacy_root = f"{cid}/"
+        if blob_name.startswith(canonical_root):
+            rel = blob_name[len(canonical_root) :]
+        elif blob_name.startswith(legacy_root):
+            rel = blob_name[len(legacy_root) :]
+        else:
+            return None
+        if not rel or rel.endswith("/"):
+            return None
+        return rel
+
     def list_prefix(self, client_id: str, prefix: str) -> list:
         from packages.core.ports.file_store import StoredObject
 
         cid = safe_client_id(client_id)
         rel_prefix = validate_relative_key(prefix) if prefix else ""
-        gcs_prefix = gcs_object_name(cid, rel_prefix) if rel_prefix else gcs_object_name(cid, ".")
-        if gcs_prefix.endswith("/."):
-            gcs_prefix = gcs_object_name(cid, "")
-        tenant_prefix = f"clients/{cid}/"
-        if rel_prefix:
-            tenant_prefix = f"{tenant_prefix}{rel_prefix}"
         objects: list[StoredObject] = []
-        for blob in self._bucket().list_blobs(prefix=tenant_prefix):
-            name = blob.name
-            if not name.startswith(tenant_prefix):
-                continue
-            rel = name[len(f"clients/{cid}/") :]
-            if not rel or rel.endswith("/"):
-                continue
-            updated = blob.updated
-            if updated and updated.tzinfo is None:
-                updated = updated.replace(tzinfo=timezone.utc)
-            objects.append(
-                StoredObject(
-                    key=rel,
-                    size=blob.size,
-                    updated_at=updated,
+        seen: set[str] = set()
+        for gcs_prefix in gcs_list_prefixes(cid, rel_prefix):
+            for blob in self._bucket().list_blobs(prefix=gcs_prefix):
+                rel = self._blob_relative_key(cid, blob.name)
+                if rel is None:
+                    continue
+                if rel_prefix and not rel.startswith(rel_prefix):
+                    continue
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                updated = blob.updated
+                if updated and updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+                objects.append(
+                    StoredObject(
+                        key=rel,
+                        size=blob.size,
+                        updated_at=updated,
+                    )
                 )
-            )
         return sorted(objects, key=lambda item: item.key)
 
     @contextmanager
