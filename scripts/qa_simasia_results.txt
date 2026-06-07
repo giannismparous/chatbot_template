@@ -1,0 +1,25 @@
+﻿{
+  "total": 18,
+  "passed": 17,
+  "failed": 1
+}
+
+--- DETAILS ---
+
+[PASS] myrto
+.\.venv\Scripts\python : Traceback (most recent call last):
+At C:\Users\Giannis\AppData\Local\Temp\ps-script-2762dffa-be7e-4562-9eb4-b465d7e8c770.ps1:94 char:73
++ ... _template"; .\.venv\Scripts\python scripts\qa_simasia_batch.py 2>&1 | ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\Giannis\Desktop\idek\SimasiaAI\Projects\chatbot_template\scripts\qa_simasia_batch.py", line 142, in 
+<module>
+    sys.exit(main())
+  File "C:\Users\Giannis\Desktop\idek\SimasiaAI\Projects\chatbot_template\scripts\qa_simasia_batch.py", line 133, in 
+main
+    print(f"  Q: {r.question}")
+  File "C:\Users\Giannis\AppData\Local\Programs\Python\Python310\lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 5-6: character maps to <undefined>

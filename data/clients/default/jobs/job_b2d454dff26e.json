@@ -1,0 +1,15 @@
+{
+  "job_id": "job_b2d454dff26e",
+  "client_id": "default",
+  "job_type": "eval",
+  "status": "succeeded",
+  "created_at": "2026-06-07T04:53:46.997971+00:00",
+  "updated_at": "2026-06-07T04:53:52.803843+00:00",
+  "result": {
+    "run_id": "eval_20260607T045347Z",
+    "status": "fail",
+    "report_path": "C:\\Users\\Giannis\\Desktop\\idek\\SimasiaAI\\Projects\\chatbot_template\\data\\clients\\default\\tests\\output\\eval_20260607T045347Z\\eval_report.json",
+    "deploy_eligible": false
+  },
+  "error": null
+}

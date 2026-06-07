@@ -1,0 +1,14 @@
+{
+  "job_id": "job_4829ae09d8ee",
+  "client_id": "default",
+  "job_type": "ingest",
+  "status": "succeeded",
+  "created_at": "2026-06-07T02:30:07.034978+00:00",
+  "updated_at": "2026-06-07T02:30:07.286985+00:00",
+  "result": {
+    "version_id": "2026-06-07T023007_0000",
+    "chunk_count": 22,
+    "source_count": 2
+  },
+  "error": null
+}

@@ -1,0 +1,33 @@
+{
+  "job_id": "job_52330437420d",
+  "client_id": "default",
+  "job_type": "drive_sync",
+  "status": "succeeded",
+  "created_at": "2026-06-07T06:34:00.784905+00:00",
+  "updated_at": "2026-06-07T06:35:31.224024+00:00",
+  "result": {
+    "sources": [
+      {
+        "source_id": "poamskp_drive",
+        "status": "synced_with_warnings",
+        "files_discovered": 47,
+        "files_synced": 33,
+        "files_failed": 13,
+        "files_skipped": 1,
+        "files_skipped_unchanged": 1,
+        "sync_summary": "Synced with warnings: 47 discovered, 33 fetched, 1 skipped unchanged, 13 failed. Failures: 11 unsupported file type; 1 docx extraction failed: File is not a zip file; 1 pdf contained no extractable text.",
+        "failure_breakdown": {
+          "unsupported file type": 11,
+          "docx extraction failed: File is not a zip file": 1,
+          "pdf contained no extractable text": 1
+        },
+        "last_error": "docx extraction failed: File is not a zip file",
+        "admin_message": "Synced with warnings: 47 discovered, 33 fetched, 1 skipped unchanged, 13 failed. Failures: 11 unsupported file type; 1 docx extraction failed: File is not a zip file; 1 pdf contained no extractable text."
+      }
+    ],
+    "credentials_configured": true,
+    "service_account_email": "poamskp-drive-service-account@lofty-scheduler-467814-k9.iam.gserviceaccount.com",
+    "updated_at": "2026-06-07T06:35:31+00:00"
+  },
+  "error": null
+}

@@ -1,0 +1,33 @@
+# Example client registry — copy to registry.yaml for local dev.
+# Use FAKE keys only in committed examples. Generate real widget keys at onboarding.
+#
+#   cp packages/config/clients/registry.example.yaml packages/config/clients/registry.yaml
+
+clients:
+  demo:
+    display_name: Demo Client (example only)
+    widget_keys:
+      - key_id: demo_widget_1
+        # Fake public widget key — replace before any real deployment
+        public_key: wk_demo_REPLACE_WITH_REAL_KEY
+        allowed_origins:
+          - http://localhost:5173
+          - http://127.0.0.1:5173
+    integration_secrets: []
+    # integration_secrets:
+    #   - secret_id: demo_integration_1
+    #     hashed_secret: "<bcrypt hash — never store plaintext in git>"
+    #     scopes: [chat:write]
+
+  default:
+    display_name: Local MVP Default
+    widget_keys:
+      - key_id: default_widget_1
+        public_key: wk_localdev_REPLACE_WITH_REAL_KEY
+        allowed_origins:
+          - http://localhost:5173
+          - http://127.0.0.1:5173
+          - http://localhost:8000
+
+# Firebase profile (future): registry entries migrate to Firestore control plane.
+# Widget auth flow unchanged: x-client-key → client_id + origin check.

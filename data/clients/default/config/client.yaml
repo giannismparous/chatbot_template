@@ -1,0 +1,12 @@
+client_id: default
+display_name: Default Client
+domain_pack: generic
+default_mode: hybrid_local
+modes:
+  - hybrid_local
+  - drive_hybrid
+source_weights:
+  local_files: 1.0
+  google_drive: 1.1
+  api: 0.9
+  db: 1.2

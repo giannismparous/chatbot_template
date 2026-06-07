@@ -1,0 +1,11 @@
+version: 1
+updated_at: '2026-06-07T06:15:21+00:00'
+defaults:
+  recursive: true
+  include_shared_drives: true
+  max_files_per_root: 200
+sources:
+- id: poamskp_drive
+  folder_id: 1-khDHT3FfegMUv1ssKXUl4CnK_GGmSOh
+  title: POAMSKP Drive
+  enabled: true

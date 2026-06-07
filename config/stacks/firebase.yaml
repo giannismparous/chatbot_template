@@ -1,0 +1,46 @@
+# Stack profile: firebase/gcp (Phase 20a control plane)
+# Select via: STACK_PROFILE=firebase
+# Requires: FIRESTORE_CONTROL_PLANE=true, WIDGET_KEY_HASH_SECRET, GCS_BUCKET, GOOGLE_CLOUD_PROJECT
+# Config blobs in GCS; config metadata + registry + jobs in Firestore.
+profile: firebase
+description: Cloud Run API + Firestore control plane + GCS files + Gemini
+
+auth_provider: widget_key_registry
+admin_auth_provider: firebase
+config_store: firestore
+file_store: gcs
+chunk_store: firestore_or_sqlite
+vector_store: faiss_or_qdrant
+job_runner: cloud_run_jobs
+scheduler: cloud_scheduler
+trace_store: firestore
+metrics_store: firestore
+llm_provider: gemini
+embedding_provider: gemini
+
+# Firestore collections (control plane — not vector search)
+firestore:
+  clients_collection: clients
+  users_collection: admin_users
+  jobs_collection: jobs
+  audit_collection: audit_log
+  traces_collection: traces
+  metrics_collection: metrics_daily
+
+# GCS layout
+gcs:
+  bucket_env: GCS_BUCKET
+  bucket_pattern: "simasia-chatbot-prod-{project_id}"
+  default_region: europe-west1
+  client_prefix: "clients/{client_id}/"
+  platform_registry: "platform/registry.yaml"
+  # Staging/rollback only: set GCS_REGISTRY_FALLBACK=true for one release (plaintext keys).
+
+deployment:
+  api: cloud_run
+  worker: cloud_run_jobs
+  region: europe-west1
+  # Phase 19: traces/metrics/sessions use ephemeral SQLite on Cloud Run (lost on redeploy).
+  ephemeral_sqlite_note: "Phase 20 replaces with Firestore or persistent store."
+
+# Widget auth stays x-client-key (server-side registry), not Firebase Auth for embed

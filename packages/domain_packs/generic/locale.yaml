@@ -1,0 +1,16 @@
+greeklish_enabled: false
+primary_language: en
+supported_languages:
+  - en
+accent_normalization: true
+query_normalization:
+  nfc: true
+  lowercase: true
+acronyms: {}
+greeklish_map: {}
+follow_up:
+  enabled: true
+  max_short_chars: 12
+  affirmatives: ["yes", "ok", "ναι", "συνέχισε", "continue"]
+  continuations: ["continue", "more", "συνέχισε"]
+  deictics: ["this", "that", "αυτό", "αυτή"]

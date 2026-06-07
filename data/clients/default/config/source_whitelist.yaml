@@ -1,0 +1,14 @@
+allowed_public_domains:
+  - simasiaai.gr
+show_public_sources_only: true
+expose_faq_sources: false
+
+citation_url_rules:
+  prefer_public_url: true
+  strip_llm_urls: true
+  allow_only_whitelisted: true
+
+citation_enforcement:
+  strip_invalid_markers: true
+  include_only_cited_sources: true
+  require_citation_markers: false

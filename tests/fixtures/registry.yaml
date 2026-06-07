@@ -1,0 +1,22 @@
+clients:
+  tenant_a:
+    display_name: Tenant A (test)
+    widget_keys:
+      - key_id: tenant_a_widget
+        public_key: wk_test_tenant_a
+        allowed_origins:
+          - http://testserver
+          - http://localhost:5173
+  tenant_b:
+    display_name: Tenant B (test)
+    widget_keys:
+      - key_id: tenant_b_widget
+        public_key: wk_test_tenant_b
+        allowed_origins:
+          - http://testserver
+  default:
+    display_name: Default (test)
+    widget_keys:
+      - key_id: default_widget
+        public_key: wk_test_default
+        allowed_origins: []

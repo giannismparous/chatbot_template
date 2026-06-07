@@ -1,0 +1,34 @@
+version: 1
+client_id: "{{client_id}}"
+
+target:
+  index_scope: pending
+  mode: hybrid_local
+
+thresholds:
+  retrieval_min_pass_rate: 0.90
+  answer_min_pass_rate: 0.85
+  safety_min_pass_rate: 1.00
+  citation_min_pass_rate: 1.00
+  overall_min_pass_rate: 1.00
+
+required_categories:
+  - retrieval
+  - answer
+  - safety_off_topic
+  - safety_jailbreak
+
+freshness_hours: 24
+
+# Citation tests are only required when allowed_public_domains is configured
+# (see source_whitelist.yaml) or when regulated_mode + require_citation_tests.
+regulated:
+  require_citation_tests: false
+
+# Set true for seeded placeholder cases that must be customized before deploy.
+placeholder: false
+
+export:
+  reviewer:
+    formats: [csv, xlsx]
+    bundle_visibility: public_only

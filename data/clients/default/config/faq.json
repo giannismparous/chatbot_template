@@ -1,0 +1,55 @@
+{
+  "entries": [
+    {
+      "id": "faq-simasia-overview",
+      "question": "Τι είναι η simasiaAI;",
+      "triggers": ["simasiaai", "simasia ai", "τι είναι η simasia"],
+      "answer": "Η simasiaAI φτιάχνει ελληνόφωνα, domain-specific AI chatbots για ρυθμιζόμενους τομείς (υγεία, νομικά, δημόσιο). Οι απαντήσεις συνοδεύονται από πηγές, με guardrails και eval· δεν είναι μεταφρασμένο ChatGPT. Live παράδειγμα: MYRTO στο Κάπα3.",
+      "language": "el",
+      "source_visibility": "internal"
+    },
+    {
+      "id": "faq-myrto",
+      "question": "Τι είναι το MYRTO;",
+      "triggers": ["myrto", "myrtofly", "μυρτω", "myrto chatbot"],
+      "answer": "MYRTO είναι το ελληνόφωνο chatbot της simasiaAI για καθοδήγηση καρκινοπαθών. Λειτουργεί σε live deployment στο Κέντρο Καθοδήγησης Καρκινοπαθών Κάπα3. Το MyrtoFly είναι σχετικό pilot (cancer-aware airport companion, Digital Gate V pilot).",
+      "language": "el",
+      "source_visibility": "internal"
+    },
+    {
+      "id": "faq-privacy",
+      "question": "Αποθηκεύετε προσωπικά δεδομένα;",
+      "triggers": [
+        "προσωπικά δεδομένα",
+        "αποθηκεύετε",
+        "gdpr",
+        "απόρρητο",
+        "privacy",
+        "personal data",
+        "pii",
+        "data storage",
+        "δεδομένα",
+        "ανώνυμ"
+      ],
+      "answer": "Σύμφωνα με τα διαθέσιμα simasiaAI docs: οι συνεδρίες είναι ανώνυμες (anonymized sessions) και δεν αποθηκεύεται PII at rest / μηδέν PII storage. Τα ερωτήματα καταγράφονται μόνο αθροιστικά όπου έχει ρυθμιστεί (aggregate-only logging). Υπάρχει GDPR/DPA posture: GDPR Art.28 DPA template για ενεργές deployments· δεν υπόσχεται επιπλέον νομικές εγγυήσεις πέρα από ό,τι τεκμηριώνουν τα docs.",
+      "language": "el",
+      "source_visibility": "internal"
+    },
+    {
+      "id": "faq-poamskp-contact",
+      "question": "Πώς μπορώ να επικοινωνήσω με την ΠΟΑμΣΚΠ;",
+      "triggers": [
+        "επικοινωνία",
+        "επικοινων",
+        "τηλέφων",
+        "email",
+        "διεύθυνση",
+        "contact",
+        "πώς μπορώ να επικοινωνήσω"
+      ],
+      "answer": "Για επικοινωνία με την Πανελλήνια Ομοσπονδία Ατόμων με Σκλήρυνση Κατά Πλάκας (ΠΟΑμΣΚΠ), σύμφωνα με τα επίσημα έντυπα της Ομοσπονδίας: Τηλέφωνο 213 022 2777 (+30 213 022 2777). Email: poamskp@otenet.gr. Διεύθυνση γραφείου: Σοφοκλέους & Αριστοτέλους 19, 167 77 Ελληνικό, Αθήνα. Ιστοσελίδα: www.poamskp.gr. Σε υλικό MS EDUCARE αναφέρεται επίσης poamskp@gmail.com.",
+      "language": "el",
+      "source_visibility": "internal"
+    }
+  ]
+}

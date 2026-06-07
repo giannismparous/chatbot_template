@@ -1,0 +1,20 @@
+theme_id: generic_default
+colors:
+  primary: "#1f4f7a"
+  secondary: "#2f6da4"
+  background: "#ffffff"
+  surface: "#f5f8fc"
+  text_primary: "#1a1a1a"
+  text_inverse: "#ffffff"
+  border: "#d9e2ee"
+radius:
+  card: 14
+  bubble: 12
+  input: 10
+assets:
+  bot_avatar_url: "/assets/bot-avatar.png"
+  user_avatar_url: "/assets/user-avatar.png"
+  bubble_background_image: ""
+features:
+  streaming_enabled: true
+  streaming_mode: safe

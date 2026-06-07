@@ -1,0 +1,27 @@
+# Stack profile: local/dev
+# Use for local development, testing, demos. No Firebase/GCP required.
+# Select via: STACK_PROFILE=local (default)
+
+profile: local
+description: Local filesystem + SQLite; manual/CLI workers; Gemini LLM/embeddings
+
+auth_provider: local_dev
+admin_auth_provider: local_token
+config_store: yaml
+file_store: local_files
+chunk_store: sqlite
+vector_store: faiss
+job_runner: local_process
+scheduler: none
+trace_store: local_sqlite
+metrics_store: local_sqlite
+llm_provider: gemini
+embedding_provider: gemini
+
+# Optional path overrides (defaults shown)
+paths:
+  clients_root: data/clients
+  registry: packages/config/clients/registry.yaml
+
+deployment:
+  api: uvicorn_local

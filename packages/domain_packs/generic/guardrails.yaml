@@ -1,0 +1,25 @@
+enabled: true
+
+input_guard:
+  enabled: true
+  jailbreak:
+    any_patterns: []
+    any_keywords: []
+    block_message: "I cannot process that request."
+  off_topic:
+    enabled: false
+    allowed_topic_keywords: []
+    block_message: "I can only help with topics related to this service."
+
+output_sanitizer:
+  enabled: true
+  strip_patterns: []
+
+regulated_profile:
+  require_claim_level_citations: true
+  block_on_claim_validation_fail: false
+  refusal_phrase: "This information was not found in approved sources."
+  end_of_paragraph_citations_invalid: true
+  exempt_sentence_patterns: []
+  factual_keywords: []
+  factual_claim_patterns: []

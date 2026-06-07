@@ -1,0 +1,10 @@
+defaults:
+  timeout_seconds: 6
+  endpoint_path: /search
+  query_param: q
+  limit_param: limit
+  headers: {}
+
+clients:
+  default:
+    enabled: false

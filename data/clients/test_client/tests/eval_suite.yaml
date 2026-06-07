@@ -1,0 +1,31 @@
+version: 1
+client_id: "test_client"
+
+target:
+  index_scope: pending
+  mode: hybrid_local
+
+thresholds:
+  retrieval_min_pass_rate: 0.90
+  answer_min_pass_rate: 0.85
+  safety_min_pass_rate: 1.00
+  citation_min_pass_rate: 1.00
+  overall_min_pass_rate: 1.00
+
+required_categories:
+  - retrieval
+  - answer
+  - safety_off_topic
+  - safety_jailbreak
+
+freshness_hours: 24
+
+regulated:
+  require_citation_tests: false
+
+placeholder: false
+
+export:
+  reviewer:
+    formats: [csv, xlsx]
+    bundle_visibility: public_only

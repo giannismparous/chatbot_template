@@ -1,0 +1,27 @@
+version: 1
+updated_at: '2026-06-07T03:32:03+00:00'
+defaults:
+  max_depth: 0
+  max_pages: 1
+  crawl_delay_ms: 500
+  respect_robots_txt: true
+  render_mode: static
+  wait_until: networkidle
+sources:
+- id: simasiaai_gr_index
+  url: https://simasiaai.gr/
+  title: main
+  enabled: true
+  render_mode: playwright
+  wait_until: networkidle
+  wait_selector: body
+  max_depth: 0
+  max_pages: 1
+- id: simasiaai_gr_collaborations
+  url: https://simasiaai.gr/collaborations
+  enabled: true
+  render_mode: playwright
+  wait_until: networkidle
+  wait_selector: body
+  max_depth: 0
+  max_pages: 1

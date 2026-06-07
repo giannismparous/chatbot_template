@@ -1,0 +1,9 @@
+version: 1
+defaults:
+  max_depth: 0
+  max_pages: 1
+  crawl_delay_ms: 500
+  respect_robots_txt: true
+  render_mode: static
+  wait_until: networkidle
+sources: []

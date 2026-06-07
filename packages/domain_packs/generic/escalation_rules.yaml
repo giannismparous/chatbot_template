@@ -1,0 +1,14 @@
+enabled: true
+
+messages:
+  dont_know: "I could not find that in the approved sources."
+  low_confidence: "This answer may be incomplete. Please verify with official channels."
+  human_handoff: "I'll connect you with our team."
+
+rules:
+  - id: speak_to_human
+    type: human_handoff
+    when:
+      any_keywords:
+        - speak to human
+        - talk to a person

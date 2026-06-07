@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Client Config",
+  "type": "object",
+  "properties": {
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "default_mode": { "type": "string" },
+        "modes": { "type": "array", "items": { "type": "string" } },
+        "source_weights": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        }
+      }
+    },
+    "clients": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "display_name": { "type": "string" },
+          "default_mode": { "type": "string" },
+          "modes": { "type": "array", "items": { "type": "string" } },
+          "source_weights": {
+            "type": "object",
+            "additionalProperties": { "type": "number" }
+          }
+        }
+      }
+    }
+  }
+}

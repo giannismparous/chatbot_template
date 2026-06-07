@@ -1,0 +1,18 @@
+# Example client config — fake/demo data only. Safe to commit.
+# Production configs live in data/clients/<client_id>/config/
+
+client_id: demo
+display_name: Demo Company (example)
+primary_language: el
+regulated_mode: false
+
+suggested_questions:
+  - Ποια είναι τα ωράρια σας;
+  - Πώς επικοινωνώ μαζί σας;
+  - Τι υπηρεσίες προσφέρετε;
+
+features:
+  streaming: false
+  citations: true
+
+# client_admin_deploy_allowed: false  # set in production per D29

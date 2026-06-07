@@ -1,0 +1,12 @@
+version: 1
+
+defaults:
+
+  recursive: true
+
+  include_shared_drives: true
+
+  max_files_per_root: 200
+
+sources: []
+

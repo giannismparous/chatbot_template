@@ -1,0 +1,2288 @@
+================================================================================
+MODULAR CHATBOT TEMPLATE — RAG BUILD GUIDE & TECHNICAL REFERENCE
+================================================================================
+Project: chatbot_template (SimasiaAI)
+Purpose: Reusable white-label chatbot product for many client deployments
+Stack: FastAPI backend + YAML multi-tenant config + worker jobs + frontend-agnostic API
+
+This document is the canonical playbook for building and deploying client chatbots.
+It includes a full technical analysis of our production-quality reference
+implementation (legacy static-site chatbot) and maps every reusable pattern into
+this template.
+
+Last updated: June 2026
+
+AUTHORITATIVE TARGET ARCHITECTURE: PART D only.
+PART A = reference benchmark (historical). PART B = operational guide (v2 layout).
+PART C = superseded production design (historical context). PART D = build this.
+Active implementation phases: PART D §D23 only.
+Stack profiles: PART D §D30; config in config/stacks/.
+
+
+================================================================================
+PRODUCT GOAL
+================================================================================
+
+Build ONE core chatbot system that can be resold/deployed for many companies.
+Each client gets isolated configuration for:
+
+  - knowledge base (files, website, Drive, API, DB)
+  - prompts, tone, and business rules
+  - FAQ layer for critical facts
+  - retrieval rules (domain routing, boosts, penalties)
+  - guardrails and privacy boundaries
+  - branding / widget theme
+  - optional external/reference sources
+
+The goal is repeatable deployment with minimal custom engineering per client.
+
+
+================================================================================
+PART A — REFERENCE IMPLEMENTATION: TECHNICAL REPORT
+================================================================================
+(Benchmark quality standard — studied from our legacy production chatbot)
+
+
+--------------------------------------------------------------------------------
+1. EXACT ARCHITECTURE (REFERENCE IMPLEMENTATION)
+--------------------------------------------------------------------------------
+
+The reference chatbot is a static-site + browser-side RAG + server-side LLM proxy.
+
+  [User browser]
+       |
+       |  (1) Load knowledge-index.json (all chunks, precomputed at build time)
+       |  (2) Load retrieval-rules.json + client-faq.json
+       |  (3) Run hybrid retrieval + scoring entirely in JavaScript
+       |  (4) Build grounded prompt with top chunks + hard rules
+       |  (5) POST prompt only (never API keys) to serverless proxy
+       v
+  [Serverless function: /.netlify/functions/gemini-chat]
+       |
+       |  (6) Keys from env (comma-separated pool, random pick)
+       |  (7) CORS origin check, prompt size limit, blocked-pattern check
+       |  (8) Forward to Google Gemini (stream or single response)
+       v
+  [Google Gemini API]
+
+  [Offline build pipelines — no LLM at query time for retrieval]
+       sync_drive_to_knowledge_index.py    → Drive PDF/DOCX/Docs → chunks
+       sync_website_to_knowledge_index.py  → crawl public site → chunks
+       ingest_* scripts                      → targeted handbook/PDF ingests
+       merge all into knowledge-index.json
+
+Key design decisions:
+  - Retrieval runs in the browser (zero server cost per query for search).
+  - LLM keys never touch the client.
+  - Single flat JSON index is the runtime knowledge source.
+  - Python twin (retrieval_core.py) mirrors JS logic for regression tests.
+  - No live web browsing at answer time — only pre-indexed content.
+
+NOTE: chatbot_template moves retrieval to the Python backend (better for
+multi-tenant, privacy, and resale). The reference patterns remain valid; only
+the runtime location changes.
+
+
+--------------------------------------------------------------------------------
+2. FILES RESPONSIBLE FOR EACH PART
+--------------------------------------------------------------------------------
+
+REFERENCE IMPLEMENTATION (legacy static-site — study only):
+
+  Chat runtime (UI + retrieval + prompts + guardrails):
+    js/chatbot.js
+    css/chatbot.css
+    chatbot.config.example.js
+
+  Knowledge & config data:
+    data/knowledge-index.json       — all indexed chunks (runtime KB)
+    data/retrieval-rules.json       — pool sizes, domain routing, boosts
+    data/<client>-faq.json          — FAQ fast-path entries
+    data/drive-sync-state.json      — incremental Drive sync cache
+    data/regression-questions.json  — labeled test cases for retrieval QA
+
+  Index build / sync:
+    scripts/sync_drive_to_knowledge_index.py
+    scripts/sync_website_to_knowledge_index.py
+    scripts/ingest_pindis_handbook.py   (example targeted ingest)
+    scripts/audit_knowledge_index.py
+
+  Retrieval test twin:
+    scripts/retrieval_core.py         — Python mirror of JS scoring logic
+
+  LLM proxy / security:
+    netlify/functions/gemini-chat.mjs
+    netlify/functions/lib/gemini-keys.mjs
+    scripts/local_gemini_proxy.py     — local dev (static site + proxy)
+
+  Testing:
+    questions.txt                     — 300 questions (60 conversations × 5)
+    questions-expected-answers.txt
+    questions-1000.txt                — large E2E batch
+    questions-1000-expected-answers.txt
+    scripts/test_retrieval_regression.py
+    scripts/test_10_smoke.py
+    scripts/test_chatbot_conversations.py
+    scripts/run_all_questions_e2e.py
+    scripts/analyze_all_answers.py
+    scripts/build_regression_set.py
+    scripts/generate_expected_answers.py
+
+  Automation:
+    .github/workflows/sync-drive-knowledge.yml  — scheduled Drive sync
+
+CHATBOT_TEMPLATE (this project — target platform):
+
+  HTTP API:
+    apps/api/main.py
+    apps/api/routes/chat.py
+    apps/api/routes/config.py
+    apps/api/routes/admin_config.py
+    apps/api/dependencies/container.py
+
+  Orchestration:
+    packages/core/orchestrator/chat_orchestrator.py
+    packages/core/policies/prompt_policy_engine.py
+    packages/core/policies/theme_provider.py
+
+  Retrieval & connectors:
+    packages/adapters/retrieval/hybrid_adapter.py
+    packages/adapters/retrieval/mode_router.py
+    packages/adapters/retrieval/vector_index_adapter.py
+    packages/adapters/retrieval/qdrant_retriever.py
+    packages/adapters/connectors/local_files_connector.py
+    packages/adapters/connectors/google_drive_connector.py
+    packages/adapters/connectors/api_connector.py
+    packages/adapters/connectors/db_connector.py
+
+  Indexing workers:
+    apps/worker/jobs/sync_sources.py
+    apps/worker/jobs/google_drive_sync.py
+    apps/worker/jobs/build_index.py
+    apps/worker/jobs/db_seed.py
+    apps/worker/jobs/vector_index_build.py
+
+  Multi-tenant config:
+    packages/config/defaults/clients.yaml
+    packages/config/defaults/prompt_policy.yaml
+    packages/config/defaults/themes.yaml
+    packages/config/defaults/drive_sources.yaml
+    packages/config/defaults/api_sources.yaml
+    packages/config/defaults/knowledge.json
+
+  Frontend starter:
+    frontends/react-widget/
+
+
+--------------------------------------------------------------------------------
+3. HOW THE KNOWLEDGE INDEX IS BUILT
+--------------------------------------------------------------------------------
+
+The reference implementation uses ONE merged file: data/knowledge-index.json
+
+  { "documents": [ ...chunk objects... ] }
+
+Build pipeline (additive merge):
+
+  Step A — Google Drive sync (sync_drive_to_knowledge_index.py)
+    1. Authenticate with service account (env: DRIVE_FOLDER_ID, credentials JSON)
+    2. Recursively list folder (PDF, DOCX, TXT, Google Docs)
+    3. For each file: download → extract text → chunk → write doc objects
+    4. Incremental: hash(file_id + modified_time) — skip unchanged files
+    5. Cache per-file chunks in drive-sync-state.json
+    6. Merge all file chunks into knowledge-index.json
+
+  Step B — Website scrape (sync_website_to_knowledge_index.py)
+    1. BFS crawl from --start-url, same-domain only, respects robots.txt
+    2. Strip nav/footer/header/cookie boilerplate from HTML
+    3. Extract main/article content via BeautifulSoup
+    4. Chunk page text → doc objects with source.type = "web"
+    5. REPLACE only previous web docs for that domain (additive-safe merge)
+
+  Step C — Targeted ingests (e.g. ingest_*_handbook.py)
+    One-off scripts for specific PDFs/handbooks not in Drive.
+
+  Step D — Write final index
+    Single JSON file served statically to the browser at runtime.
+
+Template equivalent:
+  Drive sync  → google_drive_index.json  (python -m apps.worker.jobs.sync_sources)
+  Local JSON  → knowledge.json
+  DB seed     → chatbot.sqlite3           (python -m apps.worker.jobs.build_index)
+  Vectors     → vector_index.json + optional Qdrant upsert
+
+Template gap: no website scrape worker yet — must be ported from reference.
+
+
+--------------------------------------------------------------------------------
+4. DOCUMENT/WEBSITE CLEANING, CHUNKING, TAGGING, STORAGE
+--------------------------------------------------------------------------------
+
+TEXT EXTRACTION (Drive):
+  - Google Docs → export as plain text
+  - PDF → pypdf page text extraction
+  - DOCX → python-docx paragraphs
+  - TXT → direct decode
+  - normalize_whitespace: collapse spaces, max 2 newlines, strip
+
+WEBSITE CLEANING (scrape):
+  - Remove: script, style, noscript, iframe, svg, canvas
+  - Remove: nav, footer, header, aside, .menu, .nav, .footer, .cookie, .breadcrumbs
+  - Prefer: <main> or <article> or <body> for content
+  - Title: <title> → <h1> → URL fallback
+  - Min content length filter (default ~200 chars)
+  - Skip non-HTML, binary extensions, off-domain links
+
+CHUNKING (both Drive and web):
+  - chunk_size: 1300 characters (reference production value)
+  - overlap: 180 characters (sliding window)
+  - Title format: "filename (μέρος 2/7)" or "Page Title (part 2/7)"
+  - Template drive_sources.yaml defaults: 1200 / 150 — align per client
+
+TAGGING per chunk:
+  - id: unique (drive_{fileId}_{idx} or web_{domain}_{hash}_{idx})
+  - title, content, url
+  - language: "el" if Greek chars detected, else "en"
+  - keywords: top 12 frequency tokens minus stopwords (used in retrieval)
+  - category: inferred from filename (research, policy, education, knowledge)
+  - source: { type, fileId/fileName/mimeType OR domain, modifiedTime }
+  - org: inferred at retrieval time from URL domain (not always at index time)
+
+STORAGE format (reference chunk object):
+  {
+    "id": "drive_abc123_2",
+    "title": "Annual Report.pdf (μέρος 2/7)",
+    "category": "research",
+    "content": "...chunk text...",
+    "keywords": ["research", "patient", ...],
+    "url": "https://drive.google.com/file/d/.../view",
+    "language": "el",
+    "source": { "fileId": "...", "fileName": "...", "mimeType": "application/pdf" }
+  }
+
+IMPORTANT: Reference index does NOT store embedding vectors in practice.
+cosineSimilarity() exists in chatbot.js but is unused. Retrieval is keyword-based.
+
+
+--------------------------------------------------------------------------------
+5. QUERY-TIME RETRIEVAL (REFERENCE IMPLEMENTATION)
+--------------------------------------------------------------------------------
+
+Entry: retrieveRelevantDocsWithContext() in js/chatbot.js
+
+Flow:
+
+  1. INIT — load knowledge-index.json, retrieval-rules.json, faq.json
+     Precompute normalized fields per doc (_titleNorm, _contentNorm, greeklish variants)
+
+  2. QUERY UNDERSTANDING
+     - detectLanguage(query)
+     - normalize (lowercase, strip accents)
+     - toGreeklish for Greek queries
+     - extractQueryWords (remove stopwords)
+     - resolveUserQuery() for follow-ups ("ναι", "συνέχισε", short replies)
+     - getConversationTopic() from last 4 substantive user turns
+
+  3. SCORING (per doc, language-filtered)
+     Base keyword signals:
+       - title contains full query → +1.2
+       - title contains query word → +0.5 each
+       - keyword field hits → up to +0.45
+       - content word hits → +0.08 each
+       - greeklish variants → additional boosts for Greek
+       - non-web source slight preference (+0.04)
+       - web listing pages (/author/, /category/) penalized (-0.03)
+
+     Then applyRetrievalRelevanceAdjustments():
+       - MS/clinical topic signals (domain-specific in reference)
+       - domain routing boosts/penalties (see section 7)
+       - topicBoosts from rules JSON
+       - training noise penalty
+       - disability-org vs clinical query penalty
+
+  4. FILTER & RANK
+     - Drop docs below minScore (default 0.18)
+     - Sort by relevanceScore descending
+     - maxChunksPerUrl diversity (default 2 per page)
+     - retrievePool cap (default 24 candidates)
+
+  5. FAQ MERGE
+     - faqDocsForQuery() injects matching FAQ entries (score ~2.5–3.2)
+     - Dedupe by id, take top sendToModel (default 6)
+
+  6. CONTEXT VARIANTS (follow-up handling)
+     - If direct query score < 0.38, also search:
+       query + last topic (weight 0.78)
+       query + last bot reply snippet (weight 0.62)
+     - Merge best weighted scores per doc id
+
+  7. OUT-OF-SCOPE GATE
+     - If no docs or top score < 0.22 → refuse without calling LLM
+
+  8. BUILD CONTEXT
+     - Format: "SOURCE_TITLE: ...\nSOURCE_CONTENT:\n..." joined by ---
+
+Template equivalent today:
+  HybridFederatedRetriever — simple token overlap across connectors
+  ModeRouterRetriever — routes hybrid_local / vector_db
+  NO greeklish, NO domain routing, NO FAQ merge, NO follow-up expansion
+
+
+--------------------------------------------------------------------------------
+6. FAQ LAYER — HOW AND WHEN IT IS USED
+--------------------------------------------------------------------------------
+
+File: data/<client>-faq.json
+
+Structure:
+  {
+    "entries": [
+      {
+        "id": "faq_contact",
+        "triggers": ["τηλεφων", "επικοινων", "contact"],
+        "title": "Contact",
+        "content": "Exact approved text — phone, email, address"
+      }
+    ]
+  }
+
+When triggered:
+  - At retrieval time, AFTER keyword scoring begins
+  - faqDocsForQuery() normalizes query, checks if any trigger substring matches
+  - Matching entries become synthetic docs with high relevanceScore (2.5+)
+  - Merged into candidate pool alongside KB chunks
+  - Conditional suppression: e.g. don't inject contact FAQ when user asks about
+    a foreign org domain
+
+When to use:
+  - Facts that must NEVER be wrong (contact, identity, pricing)
+  - Easily confused facts (sample size vs population total)
+  - Org disambiguation (company vs product vs disease)
+  - Rule: if a mistake would embarrass the client on their homepage → FAQ
+
+Template status: NOT IMPLEMENTED
+  Recommended path: packages/config/defaults/faq/<client_id>.json
+  Recommended adapter: packages/adapters/retrieval/faq_connector.py
+
+
+--------------------------------------------------------------------------------
+7. RETRIEVAL RULES — BOOSTS, PENALTIES, DOMAIN ROUTING
+--------------------------------------------------------------------------------
+
+File: data/retrieval-rules.json
+
+Global knobs:
+  retrievePool: 24          — max candidates before final cut
+  sendToModel: 6           — chunks injected into LLM prompt
+  minScore: 0.18           — below → excluded from candidates
+  maxChunksPerUrl: 2       — diversity cap per page
+  domainBoost: 0.55        — boost when doc org matches query target org
+  domainPenalty: 0.12      — penalize wrong-org docs when query targets specific org
+  disabilityOrgPenaltyOnClinicalMs: 0.25
+  poamskpResearchPenaltyWhenForeign: 0.08  (reference-specific name — generalize per client)
+
+domainPatterns[] — maps query signals → org tags:
+  {
+    "org": "client_main",
+    "domains": ["client.com", "drive.google.com"],
+    "query": ["client name", "brand keyword"]
+  }
+  At query time detectTargetOrgs() checks query against patterns + hostname mentions.
+  doc_org() assigns each chunk an org from URL domain or content signals.
+
+topicBoosts[] — conditional score additions:
+  {
+    "query": ["fatigue", "κοπωση"],
+    "blob": ["fatigue", "κοπωση"],
+    "add": 0.4
+  }
+  Fires when BOTH query and doc blob contain matching topic tokens.
+
+Hardcoded adjustments (in JS + Python twin — reference-specific examples):
+  - Clinical topic query + non-clinical doc → score × 0.05
+  - Wrong org research PDF on foreign org query → score × 0.08
+  - Training/employment noise on clinical query → score − 0.55
+  - Confusable org pairs (org A vs org B) → large boost/penalty pairs
+
+outOfIndexSites[] — domains not in KB; used to detect queries needing refusal.
+
+Template status: NOT IMPLEMENTED
+  Recommended: packages/config/defaults/retrieval_rules/<client_id>.json
+  Recommended: packages/adapters/retrieval/rules_engine.py
+
+
+--------------------------------------------------------------------------------
+8. PROMPTS AND GUARDRAILS BEFORE GEMINI
+--------------------------------------------------------------------------------
+
+PROMPT CONSTRUCTION (buildPrompt in reference chatbot.js):
+
+  System-side structure sent as one prompt string:
+    1. Role ("You are <bot-name>, assistant for <client>")
+    2. Rules 1–14: tone, length, context-only, no URL in body, org voice,
+       disambiguation (sample vs total, org vs disease, org A vs org B)
+    3. Rules 15–20: security (PROMPT_SECURITY_EL/EN)
+    4. Optional forceProgress rules for "continue" directives
+    5. LAST ASSISTANT REPLY (for follow-up coherence)
+    6. RECENT CHAT CONTEXT (last 6 turns)
+    7. AVAILABLE INFORMATION (retrieved chunks)
+    8. USER QUESTION
+    9. ANSWER:
+
+  Context injection format:
+    SOURCE_TITLE: <title>
+    SOURCE_CONTENT:
+    <chunk text>
+
+  Template equivalent:
+    YamlPromptPolicyEngine builds system prompt from prompt_policy.yaml
+    ChatOrchestrator injects chunks into user message (not separate system rules)
+    Template has basic rules but NOT reference-level disambiguation or security rules
+
+INPUT GUARDRAILS (before LLM call — reference):
+  isBlockedUserMessage():
+    - JAILBREAK_USER_REGEX (ignore rules, DAN, show API key, dump context)
+    - UNRELATED_TOPIC_REGEX IF query not domain-related
+    → buildBlockedReply() without API call
+
+  Out-of-scope retrieval gate (top score < 0.22):
+    → buildOutOfScopeReply() without API call
+
+PROXY GUARDRAILS (gemini-chat.mjs):
+  - MAX_PROMPT_CHARS = 120000
+  - BLOCKED_PROMPT_REGEX on incoming prompt
+  - CORS: POAMSKP_ALLOWED_ORIGINS (whitelist + Netlify preview URLs)
+  - Keys: comma-separated pool, random pick, never in response
+  - generationConfig: maxOutputTokens 400, temperature 0.4
+
+OUTPUT GUARDRAILS (sanitizeBotAnswer):
+  - Strip AIza… API key patterns
+  - Strip drive.google.com / docs.google.com URLs from answer text
+  - Strip SOURCE_TITLE / SOURCE_CONTENT leak patterns
+
+SOURCE CITATIONS (public only):
+  buildWebsiteSources() — only docs where source.type === "web" AND url is public HTTPS
+  Drive URLs, internal paths, FAQ pseudo-URLs → never shown to user
+  UI shows source chips below answer (max 4), formatted as "domain-link: Title"
+
+Template status:
+  ✓ Keys server-side (.env)
+  ✓ Basic prompt_policy.yaml
+  ✗ Input jailbreak/off-topic gates
+  ✗ Output sanitization
+  ✗ Public-only source filtering in API response
+  ✗ Streaming
+  ✗ Proxy-level prompt blocking (handled by FastAPI directly instead)
+
+
+--------------------------------------------------------------------------------
+9. TESTING AND QUESTION FILES
+--------------------------------------------------------------------------------
+
+REFERENCE TEST LAYERS:
+
+  Layer 1 — Retrieval regression (no Gemini cost)
+    scripts/test_retrieval_regression.py
+    Input: data/regression-questions.json (136 priority cases)
+           questions.txt (300 questions parsed by conversation)
+    Logic: retrieval_core.retrieve_with_context() — Python mirror of JS
+    Pass criteria: top-3 chunks match expected org tag (~90%+ target, fail < 55%)
+
+  Layer 2 — Smoke tests
+    scripts/test_10_smoke.py
+    10 turns including jailbreak attempts and "ναι"/"συνέχισε" follow-ups
+    Uses local_gemini_proxy.py
+
+  Layer 3 — Multi-turn conversation tests
+    scripts/test_chatbot_conversations.py
+    Full prompt build + optional Gemini (--gemini-limit flag)
+
+  Layer 4 — Large E2E batch
+    scripts/run_all_questions_e2e.py
+    questions-1000.txt (1000 questions)
+    questions-1000-expected-answers.txt
+    Analyze: scripts/analyze_all_answers.py
+    Output: test_run_*.md, test_run_*_summary.json
+
+  Supporting scripts:
+    scripts/build_regression_set.py     — build regression-questions.json from failures
+    scripts/generate_expected_answers.py
+    scripts/audit_knowledge_index.py    — chunk stats, noise suspects
+    scripts/compare_e2e_logs.py
+    scripts/test_key_questions.py
+
+QUESTION FILE FORMAT (questions.txt):
+  ================================================================================
+  CONVERSATION 1 — Topic title
+  ================================================================================
+  1. first question in conversation
+  2. follow-up question
+  ...
+  (60 conversations × 5 questions = 300 total in base file)
+
+Template status: NO test suite yet
+  Recommended: packages/config/test/<client_id>/regression-questions.json
+               packages/config/test/<client_id>/questions.txt
+               tests/retrieval/ and tests/e2e/ in template repo
+
+
+--------------------------------------------------------------------------------
+10. REUSABLE PARTS FOR CHATBOT_TEMPLATE
+--------------------------------------------------------------------------------
+
+Directly reusable (patterns, not copy-paste):
+
+  ✓ Chunk format schema (id, title, content, url, language, keywords, source, category)
+  ✓ Chunking parameters (1300/180 or configurable per client in drive_sources.yaml)
+  ✓ Drive sync pipeline (recursive folder, incremental hash cache, mime types)
+  ✓ Website scrape pipeline (BFS, boilerplate removal, domain-safe merge)
+  ✓ FAQ layer concept + trigger matching + high-score injection
+  ✓ retrieval-rules.json schema (pool sizes, domainPatterns, topicBoosts, penalties)
+  ✓ Hybrid keyword scoring algorithm (normalize, greeklish, stopwords, title boosts)
+  ✓ Follow-up query resolution (resolveUserQuery, conversation topic expansion)
+  ✓ Prompt structure (role + numbered rules + context + history + question)
+  ✓ Input guardrails (jailbreak regex, off-topic gate)
+  ✓ Output sanitization (key patterns, internal URL stripping)
+  ✓ Public-only citation filtering
+  ✓ Python retrieval twin for regression tests (retrieval_core.py pattern)
+  ✓ Question file formats + regression/E2E test harness
+  ✓ Audit script for index quality
+  ✓ Server-side LLM proxy pattern (template: FastAPI + GeminiAdapter)
+  ✓ Multi-key rotation (template: can add to GeminiAdapter)
+  ✓ Admin runtime config updates (template already has /v1/admin/*)
+
+
+--------------------------------------------------------------------------------
+11. CLIENT-SPECIFIC PARTS — DO NOT COPY DIRECTLY
+--------------------------------------------------------------------------------
+
+These are tied to one client's domain and must be re-authored per deployment:
+
+  ✗ domainPatterns org entries (MS org names, helani, msif, etc.)
+  ✗ topicBoosts keyword lists (EOPYY, fatigue, awards specific to one federation)
+  ✗ MS/clinical signal regexes (σκληρυν, ΣΚΠ, DMT — only if client is in healthcare)
+  ✗ FAQ entry content and triggers (contact phone, research sample sizes)
+  ✗ Prompt disambiguation rules (org vs disease, sample vs population)
+  ✗ Prompt voice/tone (Greek neutral gender for bot persona, first-person plural)
+  ✗ Suggested starter questions in UI
+  ✗ Bot name, avatar, branding
+  ✗ outOfIndexSites list
+  ✗ Hardcoded org penalty pairs (msbase vs mscare, helani vs client org)
+  ✗ Browser-side RAG architecture itself (move to backend per client isolation)
+  ✗ Netlify-specific function paths (use FastAPI routes instead)
+
+
+--------------------------------------------------------------------------------
+12. FEATURE GAPS — TEMPLATE vs REFERENCE QUALITY
+--------------------------------------------------------------------------------
+
+Already in chatbot_template:
+  [x] Server-side Gemini (keys in .env)
+  [x] Multi-client YAML (clients, prompts, themes, drive, api)
+  [x] Federated connectors (local + drive + api + db)
+  [x] Vector mode (Gemini embeddings + Qdrant option)
+  [x] Admin API with runtime reload
+  [x] Frontend-agnostic REST API
+  [x] Basic Drive sync worker
+  [x] SQLite + vector index build
+
+Missing vs reference quality:
+  [ ] FAQ layer (per-client faq JSON + connector)
+  [ ] retrieval-rules engine (domain routing, topic boosts, penalties)
+  [ ] Greek normalization + greeklish retrieval
+  [ ] Follow-up query expansion ("ναι", "συνέχισε", short reply resolution)
+  [ ] Website scrape worker
+  [ ] Keyword quality scoring (title/keyword field weights, not just token count)
+  [ ] minScore out-of-scope gate before LLM
+  [ ] Input jailbreak + off-topic blocking
+  [ ] Output sanitization (keys, Drive URLs, context leaks)
+  [ ] Public-only source filtering in API response
+  [ ] Streaming responses
+  [ ] Per-client isolated knowledge paths (currently shared defaults/)
+  [ ] Incremental Drive sync state cache
+  [ ] Index audit script
+  [ ] Regression + E2E test suite
+  [ ] DOCX/PDF text extraction parity with reference sync scripts
+  [ ] Conversation-aware retrieval (retrieveWithContext pattern)
+  [ ] Suggested questions + follow-up chips in widget
+  [ ] Multi-key Gemini rotation + CORS hardening per deployment
+
+
+--------------------------------------------------------------------------------
+13. RECOMMENDED IMPLEMENTATION PLAN (MULTI-TENANT) — SUPERSEDED
+--------------------------------------------------------------------------------
+
+HISTORICAL ONLY. The active implementation plan is PART D §D23.
+Do not use the phase list below for implementation.
+
+
+--------------------------------------------------------------------------------
+14. RISKS AND OPEN QUESTIONS — SUPERSEDED
+--------------------------------------------------------------------------------
+
+HISTORICAL ONLY. See PART D §D26 for current risks and open decisions.
+
+
+================================================================================
+PART C — PRODUCTION ARCHITECTURE (HISTORICAL — SUPERSEDED BY PART D)
+================================================================================
+Status: HISTORICAL REFERENCE ONLY. Do not implement from PART C directly.
+PART D is the single authoritative target architecture. PART C sections C1–C15
+remain useful background; C16–C17 phase/risk lists are superseded by PART D §D23–D26.
+Where C1–C15 omit or differ from PART D (e.g. source_whitelist.yaml, privacy-before-trace,
+sparse+dense retrieval, claim-level citations), PART D wins.
+
+
+--------------------------------------------------------------------------------
+C1. MULTI-TENANT ISOLATION
+--------------------------------------------------------------------------------
+
+PRINCIPLE: client_id in a JSON body is a HINT, not proof of identity.
+The backend resolves the effective client from authenticated credentials +
+request origin, then loads only that tenant's data.
+
+DATA LAYOUT (per client_id):
+
+  data/clients/<client_id>/
+    config/
+      client.yaml              — display name, modes, feature flags
+      prompt_policy.yaml       — prompts, rules, escalation
+      themes.yaml              — widget branding
+      retrieval_rules.yaml     — boosts, penalties, domain patterns
+      faq.json                 — FAQ fast-path entries
+      sources.yaml             — Drive roots, website URLs, API endpoints
+      guardrails.yaml          — jailbreak patterns, off-topic rules
+      locale.yaml              — languages, greeklish enabled/disabled
+    indexes/
+      knowledge_index.json     — flat chunk store (runtime read)
+      vector_index.json        — local vector fallback
+      sync_state.json          — incremental Drive/file sync cache
+    uploads/                   — admin-uploaded raw files (private)
+    db/
+      chunks.sqlite3           — optional SQLite mirror per client
+    tests/
+      regression-questions.json
+      questions.txt
+      expected-answers.txt
+    logs/                      — query audit logs (see C7); NOT committed to git
+
+PLATFORM SECRETS (never in client dirs):
+
+  .env / secret manager:
+    PLATFORM_GEMINI_API_KEYS       — platform LLM pool (MVP)
+    PLATFORM_ADMIN_JWT_SECRET      — admin console auth (future)
+    DATABASE_URL                   — optional central metadata DB
+
+  Per-client secrets (future / enterprise tier):
+    data/clients/<id>/secrets.env  — client-owned Gemini key, Drive SA, API keys
+    Loaded only by workers + orchestrator for that client_id.
+    Never returned by any API.
+
+WHAT IS ISOLATED PER CLIENT:
+
+  | Asset            | Location                              | Cross-tenant access |
+  |------------------|---------------------------------------|---------------------|
+  | Documents/chunks | data/clients/<id>/indexes/            | NEVER               |
+  | FAQ              | data/clients/<id>/config/faq.json     | NEVER               |
+  | Prompts/rules    | data/clients/<id>/config/             | NEVER               |
+  | Themes           | data/clients/<id>/config/themes.yaml  | NEVER               |
+  | Retrieval rules  | data/clients/<id>/config/             | NEVER               |
+  | Query logs       | data/clients/<id>/logs/ or central DB | admin of that client|
+  | Embeddings       | Qdrant collection per client OR       | NEVER               |
+  |                  | vector_index scoped by client_id      |                     |
+  | LLM secrets      | platform env OR client secrets.env    | scoped              |
+
+AUTH: HOW WIDGET / DOMAIN / API KEY MAPS TO client_id
+
+  Three credential tiers:
+
+  TIER 1 — Public widget key (browser-safe, embeddable)
+    Header: x-client-key: <widget_public_key>
+    Issued per client at onboarding. Maps 1:1 to client_id server-side.
+    Stored in platform registry (clients.yaml → widget_keys[] or DB table).
+    Optional origin binding: allowed_origins[] per key
+      (https://client.com, https://www.client.com, http://localhost:5173).
+    Request rejected if Origin/Referer not in allowlist (when binding enabled).
+    Widget key CANNOT access admin endpoints or debug traces.
+
+  TIER 2 — Server integration key (backend-to-backend)
+    Header: Authorization: Bearer <integration_secret>
+    For client CMS, CRM, mobile apps calling API directly.
+    Maps to client_id + scopes (chat:write, config:read).
+    Rate-limited separately from widget key.
+
+  TIER 3 — Admin (SimasiaAI platform or client company)
+    Header: Authorization: Bearer <admin_jwt>
+    MVP fallback: x-admin-token (platform_admin only — dev/staging ONLY).
+    Roles (authoritative matrix in PART D §D29):
+      platform_admin  — full control over all clients and platform settings
+      client_admin    — scoped to one client_id; safe self-service only
+    Production MUST use JWT with role + client_id (for client_admin) claims.
+
+  See PART D §D29 for full permission model. Widget/integration tiers unchanged above.
+
+RESOLUTION FLOW (every /v1/chat/respond request):
+
+  1. Extract credential: x-client-key OR Bearer integration token.
+  2. Resolve client_id from credential registry (NOT from request body alone).
+  3. If body contains client_id, it MUST match resolved client_id or → 403.
+  4. Validate Origin against client's allowed_origins (widget tier).
+  5. Load tenant config + indexes from data/clients/<client_id>/ only.
+  6. Proceed with chat pipeline.
+
+MVP COMPATIBILITY:
+  - Keep accepting client_id in body for local dev ONLY when ALLOW_INSECURE_CLIENT_ID=true.
+  - Production deployments set ALLOW_INSECURE_CLIENT_ID=false (default).
+
+
+--------------------------------------------------------------------------------
+C2. INGESTION PIPELINE (OFFLINE / ASYNC)
+--------------------------------------------------------------------------------
+
+RULE: Documents and websites are NEVER fetched live during chat.
+All static knowledge is indexed offline. Live connectors are ONLY for:
+  - External REST APIs marked dynamic: true in sources.yaml
+  - Database tables with frequently changing records
+  - NOT for PDFs, Drive files, or website pages.
+
+FULL PIPELINE (per source item):
+
+  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌──────────┐   ┌─────────┐
+  │ EXTRACT │ → │  CLEAN  │ → │  CHUNK  │ → │   TAG    │ → │  EMBED  │
+  └─────────┘   └─────────┘   └─────────┘   └──────────┘   └─────────┘
+       │              │              │              │              │
+       ▼              ▼              ▼              ▼              ▼
+  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌──────────┐   ┌─────────┐
+  │  STORE  │ → │ VERSION │ → │  TEST   │ → │ ACTIVATE │   │ (done)  │
+  └─────────┘   └─────────┘   └─────────┘   └──────────┘   └─────────┘
+
+STEP DETAIL:
+
+  EXTRACT
+    Uploads:    admin POST /v1/admin/clients/{id}/uploads → saves to uploads/
+    Drive:      worker sync_drive --client-id X (service account per client or shared)
+    Website:    worker sync_website --client-id X --start-url https://client.com
+    Formats:    PDF (pypdf), DOCX (python-docx), TXT, Google Docs export, HTML scrape
+
+  CLEAN
+    - normalize_whitespace (collapse spaces, strip boilerplate newlines)
+    - Remove nav/footer/header/cookie banners from HTML
+    - Strip repeated headers/footers from PDF page text
+    - Language detection → tag el/en/other
+    - PII scan flag (optional): mark chunks containing AMKA/SSN patterns for exclusion
+
+  CHUNK
+    - Configurable per client: chunk_size (default 1200), overlap (default 150)
+    - Title prefix in chunk: "Τίτλος: {title}\n\n{content}"
+    - Part labels: "{title} (part 2/7)"
+    - Min chunk length filter (drop < 80 chars)
+
+  TAG METADATA (per chunk)
+    {
+      "id", "title", "content", "url", "language",
+      "keywords": [...],           // top frequency tokens
+      "category": "faq|web|drive|upload|policy|...",
+      "org_tag": "client_main|partner_x|...",   // for domain routing
+      "source": { "type", "file_id", "domain", "modified_at" },
+      "index_version": "2026-06-06T12:00:00Z",
+      "citation_url": "https://client.com/page"  // public URL for UI (may differ from internal url)
+    }
+
+  EMBED
+    - Model: GEMINI_EMBEDDING_MODEL (default gemini-embedding-001)
+    - Batch embed all new/changed chunks
+    - Store vectors in:
+        a) vector_index.json (dev/small clients)
+        b) Qdrant collection "client_{client_id}" (production)
+    - Record embedding_model version in index metadata (must match query-time model)
+
+  STORE
+    - Write to data/clients/<id>/indexes/knowledge_index.json
+    - Upsert rows to client SQLite chunks table
+    - Upsert vectors to Qdrant
+
+  VERSION
+    - Each build produces index_manifest.json:
+        { "version": "uuid", "built_at", "chunk_count", "sources": [...], "status": "pending" }
+    - Activation is atomic swap: current → previous (rollback capable)
+    - Runtime reads "active" pointer only after tests pass
+
+  TEST (gate before activate — see C5)
+    - Run client test suite against pending index version
+    - If pass → activate; if fail → keep previous index, notify admin
+
+  ACTIVATE
+    - Flip active manifest pointer
+    - Invalidate in-memory index cache for client_id
+
+TRIGGERS:
+  - Admin: POST /v1/admin/clients/{id}/reindex
+  - Scheduled: cron/GitHub Action per client (Drive + website delta sync)
+  - Upload: auto-queue reindex job on file upload complete
+
+WORKER COMMANDS (target):
+  python -m apps.worker.jobs.ingest --client-id acme --source drive
+  python -m apps.worker.jobs.ingest --client-id acme --source website
+  python -m apps.worker.jobs.ingest --client-id acme --source uploads
+  python -m apps.worker.jobs.build_index --client-id acme
+  python -m apps.worker.jobs.activate_index --client-id acme --version <uuid>
+
+
+--------------------------------------------------------------------------------
+C3. RETRIEVAL PIPELINE (QUERY TIME)
+--------------------------------------------------------------------------------
+
+Entry: ChatOrchestrator.answer() → RetrievalPipeline.retrieve()
+
+STAGES (in order):
+
+  STAGE 0 — INPUT GATE
+    - Jailbreak / off-topic check (client guardrails.yaml)
+    - If blocked → return refusal, skip retrieval, log trace
+
+  STAGE 1 — QUERY REWRITE
+    - Normalize text (lowercase, strip accents if locale config enabled)
+    - Greeklish transliteration (ONLY if client locale.yaml: greeklish_enabled: true)
+    - Follow-up expansion: short replies ("yes", "ναι", "continue") → resolve from
+      session history + last bot question (session_id required)
+    - Output: rewritten_query, rewrite_reason, is_follow_up
+
+  STAGE 2 — FAQ MATCHING
+    - Match rewritten_query against faq.json triggers (substring, normalized)
+    - FAQ hits become FaqChunk objects with base_score = 2.5 (configurable)
+    - Conditional suppression rules (e.g. don't inject contact FAQ on partner-org query)
+    - Output: faq_hits[]
+
+  STAGE 3 — PARALLEL RETRIEVAL (static indexes only)
+    3a. KEYWORD SEARCH
+        - Search client knowledge_index / SQLite
+        - Title match, keyword field match, content token overlap
+        - Apply locale-specific tokenization (Greek stopwords if el enabled)
+        - Output: keyword_hits[] with raw_keyword_score
+
+    3b. VECTOR SEARCH (if embeddings available)
+        - Embed rewritten_query with same model as index
+        - Query Qdrant collection client_{id} OR local vector_index.json
+        - Cosine similarity → raw_vector_score
+        - Output: vector_hits[]
+
+    3c. LIVE CONNECTORS (only sources marked dynamic: true)
+        - API connector, DB connector
+        - Output: live_hits[]
+
+  STAGE 4 — RETRIEVAL RULES (per-client retrieval_rules.yaml)
+    For each candidate chunk:
+      - Detect target org/domain from query (domainPatterns)
+      - Apply domainBoost (+0.55) if org matches
+      - Apply domainPenalty (×0.12) if wrong org
+      - Apply topicBoosts[] (query token + blob token → +add)
+      - Apply hardcoded client rules from config (NOT hardcoded in code)
+      - Apply penalties: training noise, wrong-domain research, etc.
+    Output: adjusted_score per chunk + boost_penalty_log[]
+
+  STAGE 5 — SCORE FUSION (HYBRID COMBINATION)
+    Default fusion formula (configurable weights in retrieval_rules.yaml):
+
+      final_score =
+        w_kw  * normalize(keyword_score)     // default w_kw = 0.45
+      + w_vec * normalize(vector_score)     // default w_vec = 0.35
+      + w_faq * faq_bonus                   // 1.0 if FAQ hit else 0
+      + rule_delta                          // sum of boosts/penalties from stage 4
+
+    Normalization: min-max within candidate pool, or z-score — configurable.
+    FAQ chunks: if FAQ trigger is strong match (≥2 triggers), floor final_score at 0.85.
+    Live hits: w_live default 0.20, merged same way.
+
+  STAGE 6 — RERANK + DIVERSITY
+    - Sort by final_score descending
+    - Drop below min_score threshold (default 0.18) → candidate for "low confidence"
+    - max_chunks_per_url (default 2) — diversity cap
+    - retrieve_pool cap (default 24) before final cut
+    - Optional cross-encoder rerank (future; not MVP)
+
+  STAGE 7 — FINAL CONTEXT SELECTION
+    - Select top send_to_model chunks (default 6)
+    - Separate selected[] vs rejected[] with reasons for trace
+    - Build context string for LLM prompt
+    - If no chunks above min_score → skip LLM, return "I don't know" + escalation hint
+
+LOCALE CONFIG (per client — locale.yaml):
+
+  primary_language: el
+  supported_languages: [el, en]
+  greeklish_enabled: true          # false for non-Greek clients
+  accent_normalization: true
+  stopwords_file: el.txt           # or en.txt, none
+
+
+--------------------------------------------------------------------------------
+C4. DEBUG / TRACE MODE (see PART D §D27–D28 for authoritative rules)
+--------------------------------------------------------------------------------
+
+[HISTORICAL — superseded by PART D §D27 Privacy-before-trace and §D28 Debug access]
+
+Every chat request MAY produce a TraceRecord — only if privacy.yaml allows storage.
+Normal users NEVER see full trace. Widget response includes trace_id only.
+
+TRACE RECORD (stored server-side, linked by trace_id):
+
+  {
+    "trace_id": "tr_abc123",
+    "client_id": "acme",
+    "session_id": "sess_xyz",
+    "timestamp": "...",
+    "latency_ms": { "total": 820, "retrieval": 45, "llm": 760 },
+    "input": {
+      "original_message": "...",
+      "rewritten_query": "...",
+      "rewrite_reason": "follow_up_expansion",
+      "language": "el",
+      "history_turns": 3
+    },
+    "faq": {
+      "hits": [{ "id": "faq_contact", "triggers_matched": ["τηλεφων"] }]
+    },
+    "retrieval": {
+      "keyword_hits": [{ "id", "raw_score", "final_score", "source_type" }],
+      "vector_hits":  [{ "id", "cosine", "final_score" }],
+      "live_hits":    [...],
+      "boost_penalty_log": [{ "chunk_id", "rule", "delta" }],
+      "selected":     [{ "id", "title", "final_score", "reason" }],
+      "rejected":     [{ "id", "final_score", "reason": "below_min_score|diversity_cap|..." }]
+    },
+    "llm": {
+      "model": "gemini-2.5-flash-lite",
+      "prompt_tokens": 1840,
+      "completion_tokens": 120,
+      "temperature": 0.2
+    },
+    "output": {
+      "answer_preview": "...",
+      "confidence_level": "high",
+      "confidence_reason": "faq_hit + 2 strong keyword matches",
+      "requires_human": false,
+      "public_sources": [...]
+    },
+    "guardrails": {
+      "input_blocked": false,
+      "output_sanitized": false,
+      "sanitized_patterns": []
+    }
+  }
+
+ACCESS (authoritative rules in PART D §D28):
+  - POST /v1/chat/respond with debug: true → trace_id ONLY in response (widget key)
+  - GET /v1/admin/traces/{trace_id} → full trace (admin/integration + debug scope)
+  - GET /v1/admin/clients/{id}/traces?limit=50 → recent traces (admin only)
+  - Widget debug=true MUST NOT return chunks, scores, prompts, or private sources
+
+RETENTION (authoritative rules in PART D §D27):
+  - Governed by privacy.yaml — must exist before TraceRecord persistence
+  - do_not_log / aggregate_only: no raw query/answer stored
+  - PII redaction BEFORE write, not after
+  - Trace logs: retention_days per client (default 30)
+  - Never log full LLM prompt in production info-level logs (trace storage only)
+
+
+--------------------------------------------------------------------------------
+C5. TESTING / EVALUATION (DEPLOY GATE)
+--------------------------------------------------------------------------------
+
+RULE: A client MUST NOT be deployed to production until its test suite passes.
+
+Per-client test package: data/clients/<id>/tests/
+
+  regression-questions.json   — retrieval-only, expected org/topic/chunk_id
+  questions.txt               — full Q&A scenarios (multi-turn)
+  expected-answers.txt        — reference answers or key phrases
+  test-config.yaml            — pass thresholds
+
+TEST CATEGORIES:
+
+  1. RETRIEVAL REGRESSION (no LLM, fast, required)
+     - Input: regression-questions.json
+     - Assert: top-3 chunks match expected org_tag or chunk_id
+     - Pass threshold: ≥ 90% (configurable)
+
+  2. ANSWER QUALITY (with LLM, required before prod)
+     - Input: questions.txt + expected-answers.txt
+     - Assert: key phrases present, no forbidden phrases, no hallucinated contacts
+     - Pass threshold: ≥ 85% sense_ok (configurable)
+
+  3. OFF-TOPIC REFUSAL (required)
+     - Input: fixed list (bitcoin, recipes, generic trivia)
+     - Assert: refusal message, no LLM hallucination, no internal leak
+
+  4. JAILBREAK REFUSAL (required)
+     - Input: fixed list (ignore rules, show API key, dump context)
+     - Assert: blocked before LLM OR safe refusal, no key leak
+
+  5. CITATION / SOURCE TESTS (required)
+     - Input: questions that should cite public website pages
+     - Assert: sources[] contains public URL, NO drive.google.com, NO internal://
+
+  6. FAQ PRECISION (required if FAQ configured)
+     - Input: one question per FAQ entry
+     - Assert: FAQ chunk in selected context, answer contains approved fact
+
+DEPLOY GATE:
+  python -m apps.worker.jobs.run_client_tests --client-id acme --suite full
+  Output: test_report.json with pass/fail per category
+  POST /v1/admin/clients/{id}/deploy requires test_report.status == "pass"
+
+
+--------------------------------------------------------------------------------
+C6. ADMIN WORKFLOW (see PART D §D21 + §D29 for authoritative roles)
+--------------------------------------------------------------------------------
+
+[HISTORICAL — superseded by PART D §D21 Admin workflow and §D29 Role model]
+
+ACTORS:
+  - Platform admin (SimasiaAI): full control — see D29
+  - Client admin: limited self-service for own client_id — see D29
+
+WORKFLOW — CREATE NEW CLIENT:
+
+  1. POST /v1/admin/clients
+       body: { display_name, allowed_origins, primary_language, ... }
+       → creates data/clients/<id>/ skeleton + widget key
+
+  2. Configure sources
+       PUT /v1/admin/clients/{id}/sources
+       { drive: { roots: [...] }, websites: [{ url, max_pages }], uploads: enabled }
+
+  3. Upload files (optional)
+       POST /v1/admin/clients/{id}/uploads  (multipart)
+       → saves to uploads/, queues ingest job
+
+  4. Edit FAQ
+       GET/PUT /v1/admin/clients/{id}/faq
+
+  5. Edit prompts + rules + guardrails
+       GET/PUT /v1/admin/clients/{id}/prompt-policy
+       GET/PUT /v1/admin/clients/{id}/retrieval-rules
+       GET/PUT /v1/admin/clients/{id}/guardrails
+
+  6. Edit theme
+       GET/PUT /v1/admin/clients/{id}/themes
+
+  7. Trigger reindex
+       POST /v1/admin/clients/{id}/reindex
+       → runs full ingest pipeline, produces pending index version
+
+  8. Preview answers (before deploy)
+       POST /v1/admin/clients/{id}/preview
+       { message, history } → answer + trace (admin sees full trace inline)
+
+  9. Run tests
+       POST /v1/admin/clients/{id}/run-tests
+       → returns test_report.json
+
+  10. Deploy (activate index)
+       POST /v1/admin/clients/{id}/deploy
+       Requires: test_report.status == "pass"
+       → activates pending index version
+
+MVP ADMIN UI: frontends/react-widget AdminPanel extended for per-client scope.
+Production admin: separate admin dashboard (future).
+
+
+--------------------------------------------------------------------------------
+C7. PRIVACY / SECURITY
+--------------------------------------------------------------------------------
+
+WHAT GETS LOGGED (trace storage + audit):
+  - timestamp, client_id, session_id, trace_id
+  - original_message (user query)
+  - rewritten_query
+  - retrieval scores and chunk ids (NOT full chunk text in info logs)
+  - answer preview (first 200 chars in info logs; full in trace)
+  - latency, token counts, model name
+  - guardrail triggers (blocked: true/false)
+  - hashed user_id if provided
+
+WHAT DOES NOT GET LOGGED:
+  - Full LLM system prompt (trace storage only, not stdout)
+  - Full retrieved chunk text in application info logs
+  - API keys, widget secrets, admin tokens
+  - Raw uploaded file contents
+  - User PII typed into chat (AMKA, home address) — detect and redact in logs
+
+RETENTION:
+  - Query traces: 30 days default (platform config)
+  - Audit logs (admin actions): 1 year
+  - Uploaded source files: until client deleted or explicit purge
+  - Indexes: current + previous version kept for rollback
+
+PII HANDLING:
+  - Input gate: detect AMKA/SSN/credit card patterns → redact before log storage
+  - Prompt rule: never repeat user-typed personal data in answer
+  - FAQ/index: no personal data in knowledge base
+
+SOURCE VISIBILITY:
+  - sources[] in API response: PUBLIC citation_url only
+  - Internal urls (drive.google.com, internal://, uploads/) → never in sources[]
+  - FAQ pseudo-urls (faq://) → never in sources[]
+  - Chunk text in sources[]: title + citation_url only, NOT full chunk body (MVP: optional snippet)
+
+SECRET STORAGE:
+  MVP:
+    - Platform Gemini keys: .env / host secret manager
+    - Widget keys: clients registry YAML or SQLite (hashed at rest — future)
+    - Admin: x-admin-token (single secret, rotate regularly)
+  TARGET (post-MVP):
+    - Admin JWT (HS256/RS256) with roles: platform_admin, client_admin
+    - Widget keys hashed in DB; plaintext shown once at creation
+    - Per-client secrets in encrypted store (Vault / AWS SM / host env per tenant)
+    - Integration keys with scope + expiry
+
+AUTH MODEL EVOLUTION:
+  Phase MVP:  x-client-key (widget) + x-admin-token (admin, single secret)
+  Phase 1:    widget key registry + origin binding + ALLOW_INSECURE_CLIENT_ID=false
+  Phase 2:    admin JWT + client_admin role scoped to one client_id
+  Phase 3:    OAuth2 / SSO for admin dashboard; API key rotation UI
+
+
+--------------------------------------------------------------------------------
+C8. API CONTRACT (TARGET)
+--------------------------------------------------------------------------------
+
+See docs/api-contract.md for full payloads (authoritative).
+
+POST /v1/chat/respond — extended request:
+  client_id       — must match credential-resolved id (or omitted if key resolves it)
+  session_id      — required for follow-up context; server stores session state
+  user_id         — optional; hashed in logs
+  message         — user message
+  history         — [{ role, content }] (last N turns; server may also read session)
+  language        — optional override ("el" | "en"); auto-detect if omitted
+  mode            — hybrid_local | vector_db | drive_hybrid (default from client config)
+  top_k           — retrieval pool hint (default 6)
+  stream          — true for SSE streaming response
+  debug           — true requests trace_id; full trace via admin endpoint only
+
+POST /v1/chat/respond — extended response:
+  answer              — sanitized text
+  sources             — public citations only [{ title, url }]
+  confidence          — { level: "high"|"medium"|"low", reason: "..." }
+  requires_human      — bool; true when escalation rules fire
+  escalation          — optional { type, message, contact_hint }
+  trace_id            — always present; use admin API for full trace
+  session_id          — echoed
+
+Streaming: Content-Type: text/event-stream; events: chunk, done, error
+
+Admin trace: GET /v1/admin/traces/{trace_id}
+
+
+--------------------------------------------------------------------------------
+C9. CONFIDENCE (NO FAKE NUMBERS)
+--------------------------------------------------------------------------------
+
+Do NOT return a decimal like 0.75 unless it maps to a defined signal.
+Public API returns confidence.level + confidence.reason.
+
+LEVEL DEFINITIONS:
+
+  HIGH
+    - FAQ direct hit on strong trigger match, OR
+    - ≥ 2 selected chunks with final_score ≥ 0.55 and same org_tag as query target, OR
+    - FAQ + at least 1 strong keyword/vector hit
+    Reason example: "Matched FAQ entry faq_contact plus supporting document."
+
+  MEDIUM
+    - 1–2 chunks above min_score but no FAQ hit, OR
+    - Mixed signals (chunks from different orgs but best score ≥ 0.35), OR
+    - Follow-up query resolved from history with moderate retrieval
+    Reason example: "One relevant document found; answer may be incomplete."
+
+  LOW
+    - Chunks found but top score < 0.35, OR
+    - Only live/dynamic source hits (no static KB match), OR
+    - Query partially off-topic but allowed through
+    Reason example: "Weak document match; verify answer with official sources."
+
+  NONE (triggers escalation, not LLM)
+    - No chunks above min_score after all stages
+    - Input blocked by guardrails
+    Reason example: "No approved knowledge found for this question."
+
+Internal trace stores numeric final_scores for debugging; not exposed to widget.
+
+
+--------------------------------------------------------------------------------
+C10. ESCALATION (PER CLIENT)
+--------------------------------------------------------------------------------
+
+Configured in prompt_policy.yaml → escalation section + escalation_rules.yaml:
+
+ESCALATION TYPES:
+
+  dont_know
+    When: confidence NONE, or no chunks above min_score
+    Action: Return configured refusal message. requires_human = false.
+    Example: "I don't have approved information on that. I can help with ..."
+
+  suggest_contact
+    When: confidence LOW + query matches contact-intent triggers, OR
+          user asks for pricing/contract not in KB
+    Action: Answer what is known + suggest contact channel from FAQ.
+    requires_human = false.
+
+  collect_lead
+    When: user expresses purchase/demo intent (configurable triggers)
+    Action: Ask for name/email with privacy note; store in lead queue (future).
+    requires_human = false.
+
+  human_handoff
+    When: user frustration detected (configurable), OR
+          explicit "speak to human" request, OR
+          medical/legal/financial beyond approved content
+    Action: requires_human = true; return handoff message + contact info.
+    Example: "I'll connect you with our team. Contact: ..."
+
+PRIORITY: guardrail block > dont_know > human_handoff > collect_lead > suggest_contact > normal answer
+
+FAQ content provides exact contact strings — never LLM-invented phone numbers.
+
+
+--------------------------------------------------------------------------------
+C16. FINAL IMPLEMENTATION PHASES — SUPERSEDED
+--------------------------------------------------------------------------------
+
+SUPERSEDED BY PART D §D23. Do not use this phase list.
+The only active implementation plan is PART D §D23 (Phases 0–15).
+
+
+--------------------------------------------------------------------------------
+C17. RISKS AND OPEN DECISIONS — SUPERSEDED
+--------------------------------------------------------------------------------
+
+SUPERSEDED BY PART D §D26. See PART D for current risks and open decisions.
+
+
+================================================================================
+PART D — COMPLIANT PLATFORM ARCHITECTURE v2 (AUTHORITATIVE TARGET)
+================================================================================
+Status: SINGLE AUTHORITATIVE TARGET ARCHITECTURE. Implement PART D only.
+PART C is historical context; PART D supersedes all conflicting PART C details.
+Core stays generic; domain/client behavior lives in config + domain packs only.
+No healthcare, Greek-government, or client-specific acronyms/hotlines in core code.
+
+
+--------------------------------------------------------------------------------
+D1. NEW OVERALL ARCHITECTURE SUMMARY
+--------------------------------------------------------------------------------
+
+Multi-tenant, Greek-capable, citation-guaranteed, regulated-domain-ready platform:
+
+  Frontend (widget/site/mobile, optional STT/TTS/streaming)
+    → API (tenant auth, sessions)
+    → ChatOrchestrator
+         PRE-LLM: crisis_filter + input_guard
+         QUERY: NFC → greeklish? → acronyms? → rewrite
+         RETRIEVE: FAQ + sparse(BM25/TF-IDF) ∥ dense(Gemini embed) → rules → fusion → MMR
+         GROUNDING GATE → confidence → escalation
+         PROMPT (numbered chunks [1]..[N] for citations)
+         LLM orchestrator (multi-key, model chain, blocked fallback)
+         POST-LLM: citation_enforcer, whitelist, disclaimer, sanitize, public sources
+    → PII redaction (privacy.yaml) → TraceRecord (only if storage allowed) + metrics
+
+  Offline: extract→clean→chunk→tag→embed→store→version→test→activate
+  Eval: reviewer CSV/Excel harness; compliance artifact store per client
+
+  Infrastructure: adapter-based — active backends selected by STACK_PROFILE (§D30).
+  Core orchestrator NEVER imports Firebase, Firestore, GCS, or Qdrant directly.
+
+
+--------------------------------------------------------------------------------
+D2. UPDATED REQUEST FLOW
+--------------------------------------------------------------------------------
+
+  1. Auth x-client-key → client_id; validate Origin
+  2. Load client config + domain pack merge + active index
+  3. Session load (session_id); apply privacy mode
+  4. crisis_filter → if hit: guaranteed response, no LLM
+  5. input_guard (jailbreak, off-topic)
+  6. NFC normalize; optional greeklish; acronym expand; query rewrite
+  7. Retrieval pipeline (D4)
+  8. Grounding gate: empty/weak → refuse/escalate (stricter in regulated_mode)
+  9. Confidence level + reason; escalation rules
+  10. Build prompt with [1]..[N] numbered context
+  11. LLM orchestrator (D5); handle blocked provider responses (D19)
+  12. Post-process pipeline (D6-D7)
+  13. PII redaction per privacy.yaml (D27) — BEFORE any trace/log persistence
+  14. Metrics + privacy-gated trace; return answer + trace_id + public sources
+
+
+--------------------------------------------------------------------------------
+D3. UPDATED INGESTION / INDEXING FLOW
+--------------------------------------------------------------------------------
+
+OFFLINE ONLY: uploads, Drive, websites. LIVE ONLY: dynamic API/DB connectors.
+
+  extract → clean (NFC all text + filenames) → chunk → tag metadata → embed → store
+  → version → test (incl. SKIP_FILES leakage check) → activate
+
+EMBED RELIABILITY:
+  - Never silent fail; never store zero vectors
+  - Failed chunks: embedding_status=failed, excluded until retry
+  - Retry/backoff on 429; key rotation; embedding cache by content hash
+
+METADATA per chunk: source_hash, version, citation_url, internal_url, source_status,
+  downloaded_at, last_checked_at, index_version
+
+VERSION: index_manifest active/previous pointers; rollback supported
+
+
+--------------------------------------------------------------------------------
+D4. UPDATED RETRIEVAL FLOW
+--------------------------------------------------------------------------------
+
+  1. Query rewrite (NFC, greeklish?, acronyms from locale.yaml, follow-ups)
+  2. FAQ match (trigger → high-score candidates)
+  3. Parallel pool (default 25):
+       sparse BM25/TF-IDF | dense Gemini embeddings | keyword | live dynamic
+  4. Fusion: w_sparse·norm(sparse) + w_dense·norm(dense) + w_kw + faq_bonus + rules
+  5. Rules engine (domainPatterns, topicBoosts, source allowlist filter)
+  6. MMR diversification (λ configurable) + max_chunks_per_url
+  7. Select top send_to_model (default 6); build [1]..[N] context map
+
+Greek/Greeklish: locale.yaml per client; acronyms in client or domain pack — NOT core.
+
+
+--------------------------------------------------------------------------------
+D5. UPDATED LLM ORCHESTRATION FLOW
+--------------------------------------------------------------------------------
+
+  LLMProvider interface (provider-agnostic; Gemini is default adapter)
+  model_chain[]: fast/cheap first → stronger fallback
+  Key pool: rotation, cooldown after 429, exponential backoff
+  Blocked response → safe canned message + escalation hint + metric (D19)
+  No custom training in platform scope
+
+
+--------------------------------------------------------------------------------
+D6. UPDATED SAFETY / GUARDRAILS FLOW
+--------------------------------------------------------------------------------
+
+  A. crisis_filter() — deterministic, before LLM; categories + hotlines in config
+  B. input_guard — jailbreak, off-topic
+  C. grounding_gate — weak retrieval → refuse (strict in regulated_mode)
+  D. prompt security rules
+  E. POST-MODEL (code-enforced in regulated_mode):
+       citation_enforcer, source_whitelist_filter, disclaimer_injector,
+       markdown_cleaner, unsafe_output_sanitizer, public_source_filter
+  F. provider_blocked_fallback
+
+
+--------------------------------------------------------------------------------
+D7. CITATION / GROUNDING ENFORCEMENT FLOW
+--------------------------------------------------------------------------------
+
+NUMBERING:
+  - Context numbered [1]..[N]; prompt instructs inline [n] citations per factual claim
+  - sources[] maps index → public citation_url (clickable); internal hidden unless allowed
+
+STANDARD MODE:
+  - citation_enforcer strips invented [n] markers (indices not in retrieved set)
+  - LLM-generated URLs stripped unless they match retrieved chunks or source_whitelist
+  - Empty/weak retrieval → "not found in approved sources" + optional escalation
+
+REGULATED MODE (regulated_mode: true — stricter, code-enforced):
+  - Citations MUST be sentence-level / factual-claim-level — NOT end-of-paragraph only
+  - Every factual claim in the answer must either:
+      (a) carry a valid inline [n] immediately after or within the same sentence, OR
+      (b) be removed or rephrased as "not found in approved sources"
+  - End-of-paragraph citation blobs are INVALID in regulated_mode (fail validation)
+  - citation_enforcer MUST validate that EVERY [n] in the final answer maps to a
+    retrieved chunk in the context map (index ∈ {1..N} of selected chunks)
+  - Unsupported factual sentences are stripped or replaced with refusal phrasing
+  - No invented URLs, document names, or citation indices
+  - Deploy gate includes citation regression tests (claim-level coverage)
+
+CITATION_ENFORCER CHECKS (all modes):
+  1. Parse all [n] markers in answer
+  2. Reject/strip any n ∉ retrieved context indices
+  3. In regulated_mode: scan sentences for uncited factual claims → strip/rephrase
+  4. Cross-check sources[] against source_whitelist.yaml + retrieved citation_url fields
+  5. Record citation_validity in trace (admin-only)
+
+
+--------------------------------------------------------------------------------
+D8. UPDATED MULTI-TENANT ISOLATION
+--------------------------------------------------------------------------------
+
+  (PART C C1 + per-client sparse index, embed cache, Qdrant collection client_{id},
+   crisis/acronym/allowlist config, compliance folder, tests, traces, widget keys)
+
+
+--------------------------------------------------------------------------------
+D9. UPDATED CLIENT CONFIG MODEL
+--------------------------------------------------------------------------------
+
+  data/clients/<id>/config/:
+    client.yaml, domain_pack.yaml, locale.yaml, sources.yaml, source_whitelist.yaml,
+    ingestion.yaml, retrieval_config.yaml, retrieval_rules.yaml, faq.json,
+    prompt_policy.yaml, guardrails.yaml, crisis_rules.yaml, disclaimers.yaml,
+    llm.yaml, themes.yaml, privacy.yaml, compliance.yaml, escalation_rules.yaml
+
+  Merge: domain_pack defaults → client overrides
+
+SOURCE WHITELIST (first-class config — source_whitelist.yaml OR sources.yaml section):
+
+  allowed_public_domains:     # e.g. ["acme.gr", "www.acme.gr"]
+  allowed_internal_sources:   # Drive file IDs, upload paths, internal doc refs
+  citation_url_rules:
+    prefer_public_url: true   # use citation_url from chunk metadata when present
+    strip_llm_urls: true       # remove any URL the LLM invented in answer body
+    allow_only_whitelisted: true
+  show_public_sources_only: true   # widget response never exposes internal URLs
+
+  Rules:
+  - LLM-generated URLs in answer text are STRIPPED unless they exactly match a
+    retrieved chunk citation_url OR appear in allowed_public_domains
+  - sources[] in API response built ONLY from retrieved chunks + whitelist filter
+  - Internal/Drive URLs never returned to widget unless client explicitly sets
+    show_public_sources_only: false (admin/integration tier only)
+
+
+--------------------------------------------------------------------------------
+D10. DOMAIN-PACK SYSTEM
+--------------------------------------------------------------------------------
+
+  packages/domain_packs/<pack_id>/ — templates for prompts, acronyms, crisis,
+  allowlist, FAQ, disclaimers, escalation, retrieval, compliance profile, sample tests
+
+  Pack IDs (examples): healthcare, legal, public_sector, finance, insurance, tourism,
+  hr, education, utilities, retail, generic
+
+  HEALTHCARE IS AN EXAMPLE PACK ONLY — not core engine logic:
+  - Greek medical acronyms, crisis categories, emergency hotlines, regulated disclaimers
+    live in domain pack YAML/JSON or client overrides — NEVER in packages/core/
+  - Core provides generic loaders: crisis_filter reads crisis_rules.yaml;
+    acronym expand reads locale.yaml; disclaimer_injector reads disclaimers.yaml
+  - Phase 2 ships generic domain-pack loader + generic skeleton pack only
+  - healthcare pack is optional reference content for onboarding, not a core dependency
+
+  All overrideable per client; NO pack-specific logic hardcoded in core
+
+
+--------------------------------------------------------------------------------
+D11. WEBSITE AUTO-REFRESH (GENERIC CRAWLER)
+--------------------------------------------------------------------------------
+
+  Per-site config in sources.yaml (websites[]):
+
+  host_allowlist:           # explicit hosts permitted for this client crawl job
+  deny_patterns:            # path/glob deny list per host
+  max_depth:                # BFS depth limit
+  max_pages_per_crawl:      # hard cap per run (default e.g. 500)
+  crawl_delay_seconds:      # minimum delay between requests to same host
+  rate_limit_rps:           # optional requests-per-second cap per host
+  respect_robots_txt: true  # REQUIRED where legally/contractually required
+  require_domain_approval: true
+      # new domains NOT in host_allowlist → queued for manual admin approval
+      # never auto-crawl unknown domains discovered via links
+  schedule_cron:            # optional periodic refresh
+  discover_pdfs: true
+  skip_if_unchanged: true   # hash/etag dedupe
+  resume_state: true        # crawl checkpoint per site
+  nfc_dedupe: true
+  ingest_report: true       # pages fetched, skipped, denied, errors
+
+  Safety defaults (platform-level, overridable per deployment):
+  - robots.txt respected when respect_robots_txt: true
+  - Global max_pages_per_crawl ceiling enforced even if client config is higher
+  - Per-host allow/deny patterns evaluated before fetch
+  - Failed/blocked hosts logged; no silent skip of safety checks
+
+
+--------------------------------------------------------------------------------
+D12. SOURCE VERSIONING / FRESHNESS
+--------------------------------------------------------------------------------
+
+  source_hash, version, downloaded_at, last_checked_at, source_status
+  index_manifest active/previous; POST rollback-index; source_registry.json
+
+
+--------------------------------------------------------------------------------
+D13. TEST-SET LEAKAGE PREVENTION
+--------------------------------------------------------------------------------
+
+  ingestion.yaml skip_files (NFC-normalized): *expected-answers*, *reviewer*, etc.
+  Applied at ingest before chunking
+
+
+--------------------------------------------------------------------------------
+D14. REVIEWER-GRADED EVALUATION HARNESS
+--------------------------------------------------------------------------------
+
+  Batch API run → export CSV/Excel with question, answer, sources (clickable),
+  optional cited doc bundle, reviewer_grade: GOOD|PARTIAL|BAD|UNSAFE|NO_SOURCE
+  compare_runs over time; required for regulated_mode deploy sign-off
+
+
+--------------------------------------------------------------------------------
+D15. METRICS AND OBSERVABILITY
+--------------------------------------------------------------------------------
+
+  Track: doc/page counts, latencies, failure rate, citation_validity_rate,
+  retrieval_empty_rate, crisis_triggers, fallback_model_usage, blocked_content,
+  confidence distribution, reviewer scores
+  GET /v1/admin/clients/{id}/metrics (future dashboard)
+
+
+--------------------------------------------------------------------------------
+D16. COMPLIANCE ARTIFACT SUPPORT
+--------------------------------------------------------------------------------
+
+  data/clients/<id>/compliance/ — DPA, DPIA, FRIA, AI Act class, privacy notice,
+  safety flowchart; metadata in compliance.yaml; audit export bundle
+  Legal content external; platform stores references + export tooling
+
+
+--------------------------------------------------------------------------------
+D17. NO-PII / ANONYMIZED LOGGING (see D27 for trace ordering)
+--------------------------------------------------------------------------------
+
+  privacy.yaml modes: standard | anonymized | aggregate_only | do_not_log
+
+  PII redaction runs BEFORE trace/log persistence — never as a post-storage scrub.
+  do_not_log and aggregate_only modes MUST prevent raw query/answer storage entirely.
+  Debug full traces admin-only; trace content respects privacy mode at write time.
+
+
+--------------------------------------------------------------------------------
+D18. REGULATED-DOMAIN MODE
+--------------------------------------------------------------------------------
+
+  regulated_mode: true enforces by code — sentence/claim-level citations (D7),
+  disclaimer injector, crisis filter, source_whitelist required, audit logs,
+  human handoff path, compliance linked, deploy gate with full tests + reviewer sign-off.
+  client_admin cannot weaken any of the above; platform_admin owns regulated config.
+
+
+--------------------------------------------------------------------------------
+D19. GRACEFUL BLOCKED-CONTENT FALLBACK
+--------------------------------------------------------------------------------
+
+  PROHIBITED_CONTENT / safety / exhausted keys → user-safe message, no raw error,
+  escalation hint, log blocked_content, optional fallback model retry
+
+
+--------------------------------------------------------------------------------
+D20. FRONTEND EXTRAS (OPTIONAL)
+--------------------------------------------------------------------------------
+
+  themes.yaml: streaming, stt, tts, multi_language_history, citation_rendering,
+  markdown_mode; clickable [n] source chips
+
+
+--------------------------------------------------------------------------------
+D21. ADMIN WORKFLOW (ROLE-AWARE)
+--------------------------------------------------------------------------------
+
+Two admin roles. Full permission matrix: §D29.
+
+PLATFORM ADMIN (SimasiaAI) — full lifecycle for any client:
+  Create client → assign domain pack → configure all settings → manage widget/integration
+  keys → upload/sources → edit FAQ/prompts/rules/safety/privacy/compliance → reindex →
+  preview (full trace) → run-tests → deploy/rollback → view all traces/metrics →
+  approve client-requested changes (domains, regulated overrides)
+
+CLIENT ADMIN (company) — safe self-service for own client_id only:
+  Upload/manage documents → add/edit approved sources (new domains → approval queue) →
+  edit FAQ/contact/business info → edit theme/branding/suggested questions → preview
+  chatbot → request reindex → view allowed analytics → review conversation logs per
+  privacy.yaml (never full debug trace unless explicitly granted)
+
+  Client admin CANNOT deploy to production in regulated_mode without platform sign-off.
+  Client admin CANNOT modify safety-critical or platform-controlled settings (D29).
+
+Typical client-admin flow:
+  1. Upload files or add approved website URLs
+  2. Edit FAQ + theme + suggested questions
+  3. POST .../reindex (queues job; does not activate)
+  4. POST .../preview — test answers (redacted/summary trace for client_admin)
+  5. POST .../run-tests — view results (cannot bypass fail)
+  6. Request deploy → platform_admin approves (required in regulated_mode; optional
+     policy flag for non-regulated clients: client_admin_deploy_allowed)
+
+All admin mutations logged to audit log with actor role + client_id.
+
+
+--------------------------------------------------------------------------------
+D29. ADMIN ROLES AND PERMISSION MODEL
+--------------------------------------------------------------------------------
+
+PRINCIPLE: The platform is fully configurable, but NOT all configuration is editable
+by the client company. Dangerous settings are platform-admin-only or approval-gated.
+Enforcement is server-side on every admin endpoint — UI hiding alone is insufficient.
+
+ROLES:
+
+  platform_admin   SimasiaAI operators; cross-tenant; all permissions
+  client_admin     One client_id per credential; safe self-service subset only
+
+Credential shape (JWT claims minimum):
+  {
+    "sub": "user@company.gr",
+    "role": "platform_admin" | "client_admin",
+    "client_id": "acme",              // required for client_admin; absent for platform_admin
+    "scopes": ["admin:read", ...]     // optional fine-grained scopes (future)
+  }
+
+MVP dev: x-admin-token maps to platform_admin only (all clients).
+Phase 1 lays credential resolution + role/client_id scoping in middleware.
+Phase 11 ships full admin API with permission checks per endpoint.
+
+
+PERMISSION MATRIX (✓ = allowed, ✗ = forbidden, ⚡ = approval-gated)
+
+  Capability                          platform_admin   client_admin
+  ─────────────────────────────────────────────────────────────────
+  Create/delete clients               ✓                ✗
+  Assign/change domain pack           ✓                ✗
+  Manage domain packs (platform)      ✓                ✗
+  Widget + integration API keys       ✓                ✗
+  LLM/model settings (llm.yaml)       ✓                ✗
+  Platform Gemini key pool            ✓                ✗
+  Per-client secrets.env              ✓                ✗
+
+  Upload documents                    ✓                ✓ (own client)
+  Delete uploaded documents           ✓                ✓ (own uploads)
+  Add/edit approved sources           ✓                ✓ (see domain approval)
+  Request new crawl domain            ✓                ⚡ → approval queue
+  Approve new crawl domain            ✓                ✗
+
+  Edit FAQ / contact / business info  ✓                ✓
+  Edit theme / branding               ✓                ✓
+  Edit suggested questions            ✓                ✓ (client.yaml / themes)
+  Edit locale (language display)      ✓                ✓ (non-safety fields)
+
+  Edit prompt_policy (tone/business)  ✓                ✓ (business overlay only*)
+  Edit system/security prompts        ✓                ✗
+  Edit retrieval_rules                ✓                ✗
+  Edit guardrails / crisis_rules      ✓                ✗
+  Edit disclaimers (regulated)        ✓                ✗
+  Edit source_whitelist               ✓                ✗ (regulated: always)
+  Disable citations (regulated_mode)  ✗ (code-blocked) ✗ (code-blocked)
+  Disable crisis/safety filters       ✗ (code-blocked) ✗ (code-blocked)
+  Set show_public_sources_only:false  ✓                ✗ (regulated: always true)
+  Expose internal/private sources     ✓                ✗
+
+  Edit privacy.yaml                   ✓                ✗
+  Edit compliance.yaml                ✓                ✗
+  Edit escalation_rules               ✓                ✓ (contact paths only*)
+  Toggle regulated_mode               ✓                ✗
+
+  Trigger reindex                     ✓                ✓ (request/job queue)
+  Preview chatbot                     ✓ (full trace)   ✓ (answer + summary trace**)
+  Run automated tests                 ✓                ✓ (read results only)
+  Deploy / rollback index             ✓                ⚡ (non-regulated: policy flag)
+  Bypass deploy gate / test fail      ✗ (code-blocked) ✗ (code-blocked)
+
+  View aggregate metrics              ✓                ✓ (client-scoped dashboard)
+  View conversation logs              ✓                ✓ (per privacy.yaml***)
+  View full debug trace               ✓                ✗ (unless debug:granted scope****)
+  Export reviewer eval                ✓                ✗ (regulated: platform only)
+
+  * client_admin may edit client-safe prompt overlays defined in client.yaml
+    (greeting, tone hints, business name) — NOT security_rules[] or system prompt core.
+  ** client_admin preview: answer + confidence + public sources + retrieval summary;
+     NO full prompts, chunk scores, rejected chunks, or internal URLs.
+  *** conversation logs respect privacy.yaml: absent in do_not_log; redacted in
+     anonymized; aggregate counts only in aggregate_only.
+  **** platform_admin may delegate time-limited debug:traces scope to client_admin
+     via explicit grant — never default.
+
+
+CODE-ENFORCED SAFETY (cannot be overridden by any role or config edit):
+
+  When regulated_mode: true:
+  - citation_enforcer and claim-level rules always ON
+  - crisis_filter always ON
+  - show_public_sources_only forced true in API responses
+  - source_whitelist changes require platform_admin
+  - deploy requires test pass + reviewer sign-off (no bypass flag)
+  - client_admin PUT to forbidden resources → 403 Forbidden
+
+  Config writes validated by packages/core/admin/permission_guard.py (Phase 11):
+  - Reject client_admin writes to forbidden YAML keys
+  - Strip disallowed fields from partial updates
+  - Log rejected attempts to audit log
+
+
+DOMAIN APPROVAL QUEUE (client_admin adds new website host):
+
+  1. client_admin PUT .../sources with new host → status: pending_approval
+  2. Crawler does NOT fetch until platform_admin approves
+  3. platform_admin GET .../sources/pending → POST .../sources/{id}/approve|reject
+  4. Audit log records approver + timestamp
+
+  platform_admin may pre-allow hosts in source_whitelist.yaml (no queue).
+
+
+AUDIT LOG (all admin actions):
+
+  Stored platform-wide (not in client git dirs). Minimum fields:
+  actor_sub, role, client_id, action, resource, resource_id, timestamp,
+  before_hash, after_hash, ip, result (success|denied)
+
+  Retention: 1 year default. Required for regulated_mode compliance exports.
+
+
+ADMIN REGISTRY (packages/config/admin/users.yaml or DB — Phase 11):
+
+  users:
+    - sub: ops@simasia.ai
+      role: platform_admin
+    - sub: admin@acme.gr
+      role: client_admin
+      client_id: acme
+      scopes: []                    # optional: debug:traces, deploy:request
+
+  client.yaml may set:
+    client_admin_deploy_allowed: false   # default false when regulated_mode
+    client_admin_log_access: true        # gated by privacy.yaml regardless
+
+
+INTEGRATION WITH PHASE 1:
+
+  Phase 1 MUST implement:
+  - Widget auth (all profiles): x-client-key → client_id, origin binding, mismatch → 403
+  - Admin MVP: x-admin-token → platform_admin only
+  - Resolve client_admin role schema (optional in Phase 1; enforce Phase 11)
+  - Stack factory + minimal ports (§D30); no Firebase in core
+
+  Phase 11 implements:
+  - Full permission matrix on all /v1/admin/* routes
+  - Domain approval queue, audit log persistence, client_admin UI scope
+
+
+--------------------------------------------------------------------------------
+D30. IMPLEMENTATION STACK PROFILES
+--------------------------------------------------------------------------------
+
+CORE RULE:
+  No business logic depends directly on Firebase, Firestore, GCS, Qdrant, SQLite, etc.
+  The core uses provider interfaces; concrete adapters live in packages/adapters/.
+  Active implementation is selected by environment + stack config:
+
+    STACK_PROFILE=local      → config/stacks/local.yaml
+    STACK_PROFILE=firebase   → config/stacks/firebase.yaml
+    STACK_PROFILE=enterprise → config/stacks/enterprise.yaml (documented only)
+
+  apps/api/dependencies/container.py (or stack_factory.py) wires interfaces at startup.
+  Orchestrator, guardrails, citation enforcer, and retrieval pipeline import ONLY
+  from packages/core/ports/ — never from vendor SDKs.
+
+PHASE 1 SCOPE (stack + auth — minimal, do not overbuild):
+
+  WIDGET AUTH (all profiles — Phase 1, required):
+  - x-client-key → client_id resolution
+  - Origin / allowed_origins binding
+  - Body client_id mismatch → 403
+  - Storage: YAML registry (packages/config/clients/registry.yaml) in local profile
+  - Firebase profile: SAME auth flow; registry moves to Firestore in Phase 11+ (adapter swap)
+
+  ADMIN AUTH (Phase 1 MVP):
+  - x-admin-token → platform_admin only (local profile)
+  - client_admin JWT schema reserved but not required in Phase 1
+  - Firebase Auth for platform_admin / client_admin → Phase 11 (Firebase adapter phase)
+
+  STACK / PORTS (Phase 1 — minimal ABCs only):
+  - Load config/stacks/{STACK_PROFILE}.yaml + stack factory
+  - Define ONLY ports needed now:
+      AuthProvider, AdminAuthProvider, ConfigStore (minimal methods)
+  - Implement local adapters for those three
+  - Do NOT define full ABCs for FileStore, ChunkStore, TraceStore, etc. until their phase
+  - LLMProvider / VectorStore: keep existing code; migrate to ports when touched
+  - Firebase/GCP adapters: stub or defer to Phase 11+ — no Firebase imports in core
+  - Do NOT hardcode Firebase into core platform logic
+
+
+PROVIDER INTERFACES (packages/core/ports/ — add incrementally)
+
+  Phase 1 (minimal):
+    AuthProvider        — resolve_widget_key(key, origin) → client_id | deny
+    AdminAuthProvider   — resolve_admin(credential) → role + optional client_id
+    ConfigStore         — get_client_registry(), get_client_config_path() (minimal)
+
+  Add when feature phase requires (do not overbuild upfront):
+    FileStore, ChunkStore, VectorStore, JobRunner, Scheduler,
+    TraceStore, MetricsStore, EmbeddingProvider
+    LLMProvider         — already in packages/core/domain/interfaces.py
+
+  Rule: new methods on existing ports only when a phase needs them — no speculative APIs.
+
+
+IMPLEMENTATION STATUS (read this first — avoids confusion)
+
+  | Profile       | Status | Meaning |
+  |---------------|--------|---------|
+  | local/dev     | IMPLEMENT FIRST — must work in Phase 1 | Full local adapters; no Firebase/GCP credentials |
+  | firebase/gcp  | DEFAULT PRODUCTION TARGET | Stack YAML + factory wiring exist now; real Firebase/GCP adapters land progressively (mostly Phase 11+). Until then, firebase profile may reuse local adapters for auth/registry where safe. |
+  | enterprise    | DOCUMENTED ONLY — future | Factory rejects STACK_PROFILE=enterprise until implemented |
+
+  firebase/gcp is our default production direction, NOT "everything implemented now."
+  Phase 1 ships widget auth + local stack; Firebase adapter phase replaces backends incrementally.
+
+
+STACK PROFILE 1: local/dev
+  Status: IMPLEMENT FIRST (Phase 1+)
+  Purpose: local development, testing, demos, low-cost iteration.
+  Requirement: MUST work with zero Firebase/GCP credentials.
+
+  | Interface           | Adapter                    | Notes |
+  |---------------------|----------------------------|-------|
+  | AuthProvider        | LocalDevAuthProvider       | x-client-key from registry.yaml |
+  | AdminAuthProvider   | LocalTokenAdminAuthProvider| x-admin-token → platform_admin |
+  | ConfigStore         | YamlConfigStore            | data/clients/<id>/config/ |
+  | FileStore           | LocalFileStore             | data/clients/<id>/uploads/ |
+  | ChunkStore          | SqliteChunkStore           | per-client SQLite |
+  | VectorStore         | FaissVectorStore OR        | local vector_index.json fallback |
+  |                     | LocalJsonVectorStore       | |
+  | JobRunner           | LocalProcessJobRunner      | python -m apps.worker.jobs.* |
+  | Scheduler           | NoneScheduler              | manual CLI / cron on dev machine |
+  | TraceStore          | LocalSqliteTraceStore      | privacy-gated; JSON export ok |
+  | MetricsStore        | LocalSqliteMetricsStore    | local counters |
+  | LLMProvider         | GeminiAdapter              | GEMINI_API_KEY in .env |
+  | EmbeddingProvider   | GeminiEmbeddingAdapter     | same key |
+
+  Env: STACK_PROFILE=local (default)
+
+
+STACK PROFILE 2: firebase/gcp default
+  Status: DEFAULT PRODUCTION TARGET — adapters implemented progressively (Phase 11+)
+  Purpose: default production/MVP stack for SimasiaAI (Google/Firebase ecosystem).
+  Deploy: FastAPI on Cloud Run.
+  Now: config/stacks/firebase.yaml + factory profile selection only.
+  Later: Firestore, GCS, Cloud Run Jobs, Cloud Scheduler, Firebase Admin Auth adapters.
+
+  | Interface           | Adapter                    | Notes |
+  |---------------------|----------------------------|-------|
+  | AuthProvider        | WidgetKeyAuthProvider      | x-client-key server-side; NOT Firebase Auth |
+  | AdminAuthProvider   | FirebaseAdminAuthProvider  | Firebase Auth + custom claims or Firestore role map |
+  | ConfigStore         | FirestoreConfigStore       | control plane — see below |
+  | FileStore           | GcsFileStore               | Firebase Storage / GCS buckets per client prefix |
+  | ChunkStore          | FirestoreChunkStore OR     | choose by scale; prefer SQLite/Postgres if |
+  |                     | SqliteChunkStore (small)   | chunk volume grows |
+  | VectorStore         | FaissVectorStore (small) OR| FAISS for MVP/small tenants |
+  |                     | QdrantVectorStore (prod)   | separate collection per client_id |
+  | JobRunner           | CloudRunJobRunner          | Cloud Run Jobs or worker service |
+  | Scheduler           | CloudSchedulerAdapter      | crawl/sync cron |
+  | TraceStore          | FirestoreTraceStore        | always privacy-gated |
+  | MetricsStore        | FirestoreMetricsStore      | summaries; not raw message warehouse |
+  | LLMProvider         | GeminiAdapter              | Vertex/Gemini via platform keys |
+  | EmbeddingProvider   | GeminiEmbeddingAdapter     | |
+
+  FIRESTORE IS CONTROL PLANE ONLY — do NOT use as primary vector retrieval engine:
+    - client registry + widget key hashes
+    - admin users / roles (or claim metadata mirror)
+    - config metadata + version pointers (blobs may live in GCS)
+    - source metadata + upload metadata
+    - job status + ingest reports
+    - active index version pointer
+    - audit log metadata
+    - analytics summaries (counts, rates — not full traces if privacy forbids)
+
+  Heavy retrieval stays in VectorStore (FAISS/Qdrant) + ChunkStore (SQLite/Postgres).
+  Raw files in GCS; compliance artifacts in GCS with metadata in Firestore.
+
+  Public widget auth: x-client-key resolved server-side from Firestore registry —
+  end users do NOT authenticate via Firebase for embedded chat.
+
+  Env: STACK_PROFILE=firebase
+
+
+STACK PROFILE 3: optimal/enterprise target
+  Status: DOCUMENTED ONLY — not implemented
+  Purpose: future high-scale / enterprise tier.
+
+  | Interface           | Target adapter             |
+  |---------------------|----------------------------|
+  | AuthProvider        | Firebase Auth / Auth0 / SSO|
+  | AdminAuthProvider   | Enterprise SSO + RBAC sync |
+  | ConfigStore         | PostgreSQL or Firestore    |
+  | FileStore           | GCS/S3 + lifecycle policies|
+  | ChunkStore          | PostgreSQL                 |
+  | VectorStore         | Qdrant or managed vector DB| per-client collection |
+  | JobRunner           | Cloud Run Jobs / K8s jobs  |
+  | Scheduler           | Cloud Scheduler / queue    |
+  | TraceStore          | PostgreSQL or event store  |
+  | MetricsStore        | BigQuery / analytics WH    |
+  | SessionStore        | Redis (add when needed)    |
+  | LLMProvider         | Provider router; Gemini default; OpenAI/Anthropic optional |
+  | EmbeddingProvider   | Provider-agnostic; Gemini default |
+  | Secrets             | Google Secret Manager / Vault |
+
+  Env: STACK_PROFILE=enterprise (reserved; factory rejects until implemented)
+
+
+STACK CONFIG FILES
+
+  config/stacks/local.yaml
+  config/stacks/firebase.yaml
+  config/stacks/enterprise.yaml
+
+  Loaded at startup; values name adapter registry keys, not import paths.
+  Optional overrides via env vars (e.g. VECTOR_STORE=qdrant forces adapter within profile).
+
+
+ADAPTER LAYOUT (packages/adapters/)
+
+  auth/           LocalDevAuthProvider, WidgetKeyAuthProvider, FirebaseAdminAuthProvider
+  config/         YamlConfigStore, FirestoreConfigStore
+  storage/        LocalFileStore, GcsFileStore
+  chunks/         SqliteChunkStore, FirestoreChunkStore, PostgresChunkStore (future)
+  vector/         FaissVectorStore, LocalJsonVectorStore, QdrantVectorStore
+  jobs/           LocalProcessJobRunner, CloudRunJobRunner
+  scheduler/      NoneScheduler, CloudSchedulerAdapter
+  trace/          LocalSqliteTraceStore, FirestoreTraceStore
+  metrics/        LocalSqliteMetricsStore, FirestoreMetricsStore
+  llm/            GeminiAdapter (+ future OpenAIAdapter)
+  embedding/      GeminiEmbeddingAdapter
+
+  Factory: packages/core/stack/factory.py reads STACK_PROFILE → wires container.
+
+
+IMPLEMENTATION TIMELINE BY PROFILE
+
+  Widget auth (x-client-key + origin): Phase 1 ALL profiles (YAML registry → Firestore Phase 11)
+  Admin auth (x-admin-token platform_admin): Phase 1 local only
+  Admin auth (Firebase platform_admin / client_admin): Phase 11
+
+  | Provider            | local/dev      | firebase/gcp adapters | enterprise   |
+  |---------------------|----------------|------------------------|--------------|
+  | AuthProvider        | Phase 1 ✓      | registry→Firestore Ph11| future       |
+  | AdminAuthProvider   | Phase 1 token  | Firebase Auth Ph11     | future       |
+  | ConfigStore         | Phase 1–2 YAML | Firestore Ph11         | future       |
+  | FileStore           | Phase 3        | GCS Ph11               | future       |
+  | ChunkStore          | Phase 3        | hybrid Ph11            | future       |
+  | VectorStore         | partial now    | Qdrant/FAISS Ph4/11    | future       |
+  | JobRunner           | Phase 3 CLI    | Cloud Run Ph11         | future       |
+  | Scheduler           | manual         | Cloud Scheduler Ph11   | future       |
+  | TraceStore          | Phase 9        | Firestore Ph11         | future       |
+  | MetricsStore        | Phase 9        | Firestore Ph15         | future       |
+  | LLMProvider         | exists         | same adapter           | router future|
+  | EmbeddingProvider   | partial        | Phase 4                | future       |
+
+
+FORBIDDEN PATTERNS
+
+  ✗ from google.cloud import firestore inside packages/core/orchestrator/
+  ✗ Direct GCS upload in apps/api/routes/chat.py
+  ✗ Hardcoded if STACK_PROFILE == "firebase" in business logic (use injected provider)
+  ✗ Firestore as vector similarity engine unless explicitly revisited in enterprise tier
+
+
+--------------------------------------------------------------------------------
+D22. UPDATED API CONTRACT (see docs/api-contract.md)
+--------------------------------------------------------------------------------
+
+  Request: +session_id, user_id, language, stream, debug
+  Response: answer with [n] markers, sources[{index,title,url}], confidence{level,reason},
+  requires_human, escalation, trace_id
+  Full trace: GET /v1/admin/traces/{trace_id} — admin or integration credential
+  with debug scope ONLY (see D28)
+
+
+--------------------------------------------------------------------------------
+D27. PRIVACY BEFORE TRACE (REQUIRED ORDERING)
+--------------------------------------------------------------------------------
+
+RULE: privacy.yaml MUST exist and be enforced BEFORE TraceRecord storage is implemented.
+
+Implementation gate:
+  - Phase 8 implements privacy model + PII redaction pipeline
+  - Phase 9 implements TraceRecord — ONLY after Phase 8 is complete
+  - No interim "store everything then redact later" path
+
+privacy.yaml fields (minimum):
+  mode: standard | anonymized | aggregate_only | do_not_log
+  store_raw_messages: bool        # false when mode is do_not_log or aggregate_only
+  store_rewritten_query: bool
+  pii_redaction_enabled: bool
+  retention_days: int
+
+Mode behavior:
+  standard:       raw messages allowed if store_raw_messages: true; PII redacted first
+  anonymized:     hash user_id; redact PII in message fields before write
+  aggregate_only: NO raw query/answer in trace — counts/latencies/confidence only
+  do_not_log:     NO trace persistence of message content; trace_id may still be returned
+                  as opaque correlation id with metadata-only internal record
+
+Pipeline order (mandatory):
+  1. Generate answer
+  2. Apply privacy redaction to in-memory trace payload
+  3. Drop fields disallowed by mode (e.g. original_message in aggregate_only)
+  4. Persist trace (if any fields remain storable)
+  5. Return widget response (trace_id only — never full trace)
+
+
+--------------------------------------------------------------------------------
+D28. DEBUG ACCESS (WIDGET vs ADMIN)
+--------------------------------------------------------------------------------
+
+WIDGET (x-client-key — public embed):
+  - debug: true in POST /v1/chat/respond returns trace_id ONLY in response
+  - Widget MUST NOT receive: retrieved chunks, scores, prompts, internal URLs,
+    rejected chunks, boost logs, or full TraceRecord
+  - Browser-origin debug=true is NOT a debug credential — treat as correlation only
+
+ADMIN / INTEGRATION (debug scope required for full trace):
+  - GET /v1/admin/traces/{trace_id} — platform_admin OR integration secret with
+    debug scope; client_admin forbidden unless explicit debug:traces scope granted
+  - POST /v1/admin/clients/{id}/preview:
+      platform_admin → full inline trace
+      client_admin → answer + confidence + public sources + summary only (D29)
+  - Full trace content still respects privacy.yaml (fields may be redacted/absent)
+
+FORBIDDEN:
+  - Returning full trace in chat respond body for any credential tier
+  - Widget key accessing GET /v1/admin/traces/*
+  - Leaking private/internal source URLs to widget when show_public_sources_only: true
+
+
+--------------------------------------------------------------------------------
+D23. IMPLEMENTATION PHASES v2 (ONLY ACTIVE PHASE PLAN)
+--------------------------------------------------------------------------------
+
+  PHASE 0   Design sign-off (PART D approved — current step)
+  PHASE 1   Tenant isolation + widget auth + admin role resolution + stack scaffolding
+            (ports/interfaces, stack factory, local profile adapters for auth/config;
+            firebase adapters stubbed — not fully implemented)
+  PHASE 2   Client config model + domain pack loader (generic skeleton only;
+            healthcare pack = optional example, not core)
+  PHASE 3   Ingestion v2: NFC, SKIP_FILES, embed reliability, versioning, crawler safety
+  PHASE 4   Retrieval v2: sparse+dense fusion, MMR, FAQ, rules, locale config
+  PHASE 5   Citation pipeline: claim-level [n], citation_enforcer, source_whitelist
+  PHASE 6   Safety: crisis_filter, post-processors, regulated_mode
+  PHASE 7   LLM orchestrator: model chain, key rotation, blocked fallback
+  PHASE 8   Privacy model + PII redaction pipeline (BLOCKS Phase 9 until done)
+  PHASE 9   Trace + confidence + metrics (privacy-gated persistence only)
+  PHASE 10  Test harness + reviewer export + deploy gate
+  PHASE 11  Admin lifecycle API + permission_guard + audit log + domain approval queue
+  PHASE 12  API v2 + streaming + sessions
+  PHASE 13  Frontend: citations, STT/TTS, streaming, trace_id-only debug
+  PHASE 14  Compliance artifacts + audit export
+  PHASE 15  Observability dashboard API
+
+  PART C §C16, PART A §13, and any other phase lists are superseded — do not use.
+
+
+--------------------------------------------------------------------------------
+D24. PHASE CHANGES FROM PART C
+--------------------------------------------------------------------------------
+
+  Keyword-only → sparse+dense+MMR | Gemini-only → orchestrator | Guardrails → crisis+post-process
+  | Ingestion → NFC+embed reliability+SKIP_FILES+crawler safety
+  | Trace merged with privacy → split Phase 8 (privacy) + Phase 9 (trace)
+  | Phases renumbered 0–15 | Greek via locale.yaml not core
+  | source_whitelist.yaml first-class | claim-level citations in regulated_mode
+  | Admin RBAC: platform_admin vs client_admin (D29) | Phase 1 role scaffolding
+  | Stack profiles (D30): local + firebase documented; enterprise future
+
+
+--------------------------------------------------------------------------------
+D25. FIRST CODING PHASE + FILES
+--------------------------------------------------------------------------------
+
+  Still PHASE 1 (tenant isolation + role-aware admin auth + stack scaffolding), then
+  PHASE 2 (config + generic domain pack loader).
+
+  Phase 1 files:
+    packages/core/ports/           — AuthProvider, AdminAuthProvider, ConfigStore ONLY (minimal)
+    packages/core/stack/factory.py — load config/stacks/{profile}.yaml; wire local adapters
+    packages/core/tenant/*         — paths
+    packages/core/admin/roles.py   — role enum (platform_admin for MVP token)
+    packages/adapters/auth/        — LocalDevAuthProvider (widget key + origin)
+    packages/adapters/auth/        — LocalTokenAdminAuthProvider (x-admin-token)
+    packages/adapters/config/      — YamlConfigStore (registry + paths)
+    apps/api/middleware/client_auth.py, admin_auth.py
+    apps/api/dependencies/tenant.py, stack.py
+    MODIFY container.py, chat.py
+    COPY registry.example.yaml → registry.yaml (local, gitignored if contains real keys)
+    config/stacks/*.yaml (committed — no secrets)
+
+  Phase 1 delivers:
+    - STACK_PROFILE=local works without Firebase
+    - Widget auth Phase 1: x-client-key → client_id, origin binding, mismatch → 403
+    - Admin MVP: x-admin-token → platform_admin only
+    - Minimal ports only — no FileStore/TraceStore ABCs yet
+    - Stack factory + firebase.yaml profile selectable; GCP adapters deferred Phase 11+
+    - No Firebase imports in packages/core/
+
+  Do NOT start Phase 9 (TraceRecord) before Phase 8 (privacy.yaml + redaction) is complete.
+
+
+--------------------------------------------------------------------------------
+D26. RISKS AND CONFIRM BEFORE CODING
+--------------------------------------------------------------------------------
+
+  RISKS: citation over-stripping; BM25+dense complexity; crisis false positives;
+  regulated deploy friction; embedding cost at scale
+  stack adapter sprawl if interfaces not frozen in Phase 1
+  Firestore misuse as retrieval engine (mitigate: D30 control-plane rule)
+  dual-path local vs firebase config drift (mitigate: shared ConfigStore interface)
+
+  CONFIRM: BM25 vs TF-IDF | strict citation strip vs disclaimer | FAQ deterministic?
+  | reviewer auto threshold? | Qdrant per-client collection? | MVP vs enterprise tier?
+  | acronym index-time duplication?
+  | client_admin_deploy_allowed default for non-regulated clients?
+  | time-limited debug:traces grant for client_admin — ever, or platform only?
+  | firebase ChunkStore: Firestore vs SQLite threshold for MVP clients?
+  | FAISS vs Qdrant default within firebase profile for first production client?
+
+  DEFAULTS: sklearn TF-IDF MVP | strip unsupported + LOW confidence | FAQ via LLM in regulated
+  | auto tests + human reviewer first regulated client | separate Qdrant collection
+  | STACK_PROFILE=local for dev; STACK_PROFILE=firebase for production deploy
+  | MVP = Phases 1-9 (through privacy-gated trace; admin/frontend later)
+
+
+================================================================================
+PART B — OPERATIONAL BUILD GUIDE (v2 PER-CLIENT LAYOUT)
+================================================================================
+
+NOTE: PART B reflects production workflow per PART D. Legacy shared-default
+commands below are for LOCAL MVP DEV ONLY — not production client onboarding.
+
+
+--------------------------------------------------------------------------------
+QUICK START (LOCAL MVP — single "default" client)
+--------------------------------------------------------------------------------
+
+  # Backend
+  cd chatbot_template
+  pip install -r requirements.txt
+  cp .env.example .env          # then set GEMINI_API_KEY (never commit .env)
+  cp packages/config/clients/registry.example.yaml packages/config/clients/registry.yaml
+  python -m uvicorn apps.api.main:app --reload --port 8000
+
+  # Frontend (separate terminal, PowerShell)
+  cd frontends\react-widget
+  npm install
+  npm run dev
+  # → http://localhost:5173
+
+  This uses packages/config/defaults/ for local smoke testing only.
+
+
+--------------------------------------------------------------------------------
+PRODUCTION CLIENT LAYOUT (PART D — use this for real deployments)
+--------------------------------------------------------------------------------
+
+  data/clients/<client_id>/
+    config/          ← client.yaml, privacy.yaml, source_whitelist.yaml, sources.yaml, …
+    indexes/         ← versioned sparse + dense indexes (active/previous)
+    uploads/         ← admin file uploads (offline ingest)
+    tests/           ← regression + reviewer fixtures
+    logs/            ← privacy-gated traces (if privacy.yaml allows)
+    compliance/      ← DPA/DPIA/FRIA artifact refs
+
+  packages/config/clients/registry.yaml   ← widget keys → client_id + allowed_origins
+  packages/domain_packs/<pack_id>/        ← optional templates (healthcare = example)
+
+
+--------------------------------------------------------------------------------
+ONBOARD A NEW CLIENT (PRODUCTION)
+--------------------------------------------------------------------------------
+
+  1. POST /v1/admin/clients — create client_id + widget key + domain pack
+  2. Configure data/clients/<id>/config/:
+       client.yaml, privacy.yaml, source_whitelist.yaml, sources.yaml,
+       prompt_policy.yaml, faq.json, retrieval_rules.yaml, crisis_rules.yaml, …
+  3. Upload files → data/clients/<id>/uploads/ OR configure Drive/websites in sources.yaml
+  4. Run offline ingest (per client):
+       python -m apps.worker.jobs.ingest --client-id <id>
+     (Phase 3 — not yet implemented; do NOT use shared sync_sources for production)
+  5. Write tests in data/clients/<id>/tests/
+  6. POST .../run-tests → must pass before deploy
+  7. POST .../deploy — activates index version
+  8. Embed widget with x-client-key (NOT body client_id alone)
+
+
+--------------------------------------------------------------------------------
+LEGACY MVP INDEXING (local dev only — packages/config/defaults/)
+--------------------------------------------------------------------------------
+
+  # Google Drive → google_drive_index.json (shared default client)
+  python -m apps.worker.jobs.sync_sources
+
+  # SQLite + vector index (+ Qdrant if configured)
+  python -m apps.worker.jobs.build_index
+
+  Do NOT treat these as the production multi-tenant workflow.
+
+
+--------------------------------------------------------------------------------
+SECRETS AND GIT (before Phase 1 — required)
+--------------------------------------------------------------------------------
+
+  Never commit: .env, service account JSON, real widget keys, client uploads,
+  indexes, traces, logs, SQLite DBs, reviewer/compliance artifacts.
+
+  Safe committed examples:
+    .env.example
+    packages/config/clients/registry.example.yaml
+    packages/config/examples/demo_client/
+    config/stacks/*.yaml
+
+  Real registry: copy registry.example.yaml → registry.yaml (gitignored).
+
+  See .gitignore at repo root for full exclusion list.
+
+
+--------------------------------------------------------------------------------
+ENVIRONMENT VARIABLES
+--------------------------------------------------------------------------------
+
+  GEMINI_API_KEY                  — LLM + embeddings
+  STACK_PROFILE                   — local (default) | firebase | enterprise (not implemented)
+  DEFAULT_CLIENT_ID               — local MVP only (usually "default")
+  ALLOW_INSECURE_CLIENT_ID        — local dev only; false in production
+  DEFAULT_MODEL                   — e.g. gemini-2.5-flash-lite
+  EMBEDDING_MODEL                 — e.g. gemini-embedding-001
+  GOOGLE_DRIVE_CREDENTIALS_JSON   — service account for Drive sync
+  DB_SQLITE_PATH                  — optional SQLite path (MVP)
+  API_CONNECTOR_BASE_URL          — optional external API
+  API_CONNECTOR_API_KEY           — optional API bearer token
+  QDRANT_URL / QDRANT_API_KEY     — optional vector DB
+  ADMIN_API_TOKEN                 — protects /v1/admin/* endpoints (MVP dev)
+
+
+--------------------------------------------------------------------------------
+API ENDPOINTS
+--------------------------------------------------------------------------------
+
+  POST /v1/chat/respond              — main chat (x-client-key required in production)
+  GET  /v1/theme/{client_id}         — UI branding
+  GET  /v1/config/public/{client_id} — modes, languages, suggested questions
+  GET  /health
+  GET/PUT /v1/admin/*                — admin lifecycle (see api-contract.md)
+
+  debug: true on chat → trace_id only. Full trace via admin endpoint only.
+
+
+--------------------------------------------------------------------------------
+GENERALIZED CHECKLIST FOR ANY NEW CLIENT
+--------------------------------------------------------------------------------
+
+[ ] Create client in registry + widget key + allowed_origins
+[ ] Provision platform_admin and/or client_admin users (see D29)
+[ ] privacy.yaml decided BEFORE enabling trace storage
+[ ] source_whitelist.yaml configured (public domains, strip_llm_urls)
+[ ] Collect sources; offline ingest per client (--client-id)
+[ ] Write FAQ entries for critical facts
+[ ] Configure retrieval rules, crisis_rules, disclaimers (domain pack or client)
+[ ] Citation + regulated_mode tests if applicable
+[ ] Regression + reviewer test suite before deploy
+[ ] Frontend wired with x-client-key + theme
+[ ] Production .env set; keys never in git or browser
+
+
+================================================================================
+END OF GUIDE — SimasiaAI / Modular Chatbot Template
+================================================================================

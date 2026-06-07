@@ -1,0 +1,58 @@
+chunk_size: 800
+overlap: 100
+skip_files:
+  - "*.tmp"
+  - "~$*"
+  - ".DS_Store"
+  - "*eval*"
+  - "*expected*"
+  - "*reviewer*"
+  - "*test_report*"
+  - "*eval_report*"
+allowed_extensions:
+  - ".txt"
+  - ".md"
+  - ".pdf"
+  - ".docx"
+embed_enabled: false
+embedding_model: gemini-embedding-001
+embed_batch_size: 16
+embed_max_retries: 3
+embed_backoff_base_ms: 500
+embed_backoff_max_ms: 30000
+cache_embeddings: true
+skip_unchanged_sources: true
+
+web_crawl:
+  global_max_pages_per_source: 50
+  global_max_depth: 2
+  request_timeout_seconds: 20
+  max_response_bytes: 2000000
+  user_agent: "SimasiaAI-CrawlerLite/1.0 (+admin-managed)"
+  low_content_min_chars: 100
+  deny_path_patterns:
+    - "/wp-admin"
+    - "/admin"
+    - "/login"
+    - "/signin"
+    - "/cart"
+    - "/checkout"
+  deny_query_prefixes:
+    - "utm_"
+    - "fbclid"
+    - "gclid"
+    - "session"
+    - "token"
+  playwright_timeout_seconds: 30
+  playwright_max_timeout_seconds: 60
+  playwright_enabled: true
+
+drive_sync:
+  max_file_bytes: 10000000
+  global_max_files_per_source: 200
+  allowed_mime_types:
+    - application/vnd.google-apps.document
+    - application/pdf
+    - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    - text/plain
+    - text/markdown

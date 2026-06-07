@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "widget_keys",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "key_prefix", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

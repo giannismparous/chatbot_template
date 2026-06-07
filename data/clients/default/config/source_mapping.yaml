@@ -1,0 +1,13 @@
+version: 1
+updated_at: '2026-06-07T02:29:51+00:00'
+uploads:
+  simasiaai_landing.md:
+    citation_url: https://simasiaai.gr/
+    title: simasiaai_landing.md
+    source_visibility: public
+    updated_at: '2026-06-07T02:29:51+00:00'
+  simasiaai_tech.md:
+    citation_url: https://simasiaai.gr/collaborations
+    title: simasiaai_tech.md
+    source_visibility: public
+    updated_at: '2026-06-07T02:28:01+00:00'

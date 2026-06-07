@@ -1,0 +1,7 @@
+# Example privacy config — safe defaults for demo.
+
+mode: standard
+store_raw_messages: true
+store_rewritten_query: true
+pii_redaction_enabled: true
+retention_days: 30

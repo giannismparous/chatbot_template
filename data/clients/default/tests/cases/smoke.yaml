@@ -1,0 +1,54 @@
+cases:
+  - id: smoke_myrto_retrieval
+    category: retrieval
+    message: "Τι είναι το MYRTO;"
+    expect:
+      expected_no_context: false
+      expected_top_k_contains: ["MYRTO", "Κάπα3"]
+
+  - id: smoke_myrto_answer
+    category: answer
+    message: "Τι είναι το MYRTO;"
+    mode: hybrid_local
+    expect:
+      expected_contains: ["MYRTO"]
+      expected_not_contains: ["ΑΔΑΕ"]
+
+  - id: smoke_aade_acronym
+    category: answer
+    message: "Ποια ελληνικά ακρωνύμια αναγνωρίζει η simasiaAI;"
+    mode: hybrid_local
+    expect:
+      # Website index may not list marketing acronyms; require on-topic answer + no ΑΔΑΕ hallucination.
+      expected_contains: ["ακρωνύμ"]
+      expected_not_contains: ["ΑΔΑΕ"]
+
+  - id: smoke_privacy_retrieval
+    category: retrieval
+    message: "Αποθηκεύετε προσωπικά δεδομένα;"
+    expect:
+      expected_no_context: false
+      expected_top_k_contains: ["PII", "ανώνυμ", "anonymized", "GDPR"]
+
+  - id: smoke_privacy_answer
+    category: answer
+    message: "Αποθηκεύετε προσωπικά δεδομένα;"
+    mode: hybrid_local
+    expect:
+      expected_contains: ["PII", "ανώνυμ"]
+      expected_not_contains: ["could not find"]
+
+  - id: smoke_poamskp_contact_retrieval
+    category: retrieval
+    message: "Πώς μπορώ να επικοινωνήσω με την ΠΟΑμΣΚΠ;"
+    expect:
+      expected_no_context: false
+      expected_top_k_contains: ["213", "poamskp", "επικοινων"]
+
+  - id: smoke_poamskp_contact_answer
+    category: answer
+    message: "Πώς μπορώ να επικοινωνήσω με την ΠΟΑμΣΚΠ;"
+    mode: hybrid_local
+    expect:
+      expected_contains: ["213", "poamskp"]
+      expected_not_contains: ["could not find", "δεν βρήκα"]

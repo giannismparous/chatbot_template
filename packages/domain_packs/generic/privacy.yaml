@@ -1,0 +1,38 @@
+mode: standard
+
+storage:
+  persist_traces: false
+  store_raw_messages: true
+  store_rewritten_query: true
+  store_answer: true
+  store_history: true
+  store_retrieval_detail: true
+  store_llm_detail: true
+
+pii:
+  redaction_enabled: true
+  replacement: "[REDACTED]"
+  detectors:
+    email: true
+    phone: true
+    credit_card: true
+    amka: true
+    ssn: true
+    iban: true
+    address_heuristic: false
+
+identity:
+  hash_user_id: false
+  hash_algorithm: sha256
+  hash_salt_env: PRIVACY_HASH_SALT
+
+retention_days: 30
+
+session:
+  enabled: true
+  max_turns: 20
+  ttl_hours: 24
+
+ephemeral:
+  expose_operational_trace: true
+  expose_debug_trace_in_api: false

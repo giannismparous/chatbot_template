@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Prompt Policy Config",
+  "type": "object",
+  "properties": {
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "base_system_prompt": { "type": "string" },
+        "rules": { "type": "array", "items": { "type": "string" } },
+        "escalation": { "type": "string" }
+      }
+    },
+    "clients": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "base_system_prompt": { "type": "string" },
+          "mode_overrides": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "rules": { "type": "array", "items": { "type": "string" } },
+          "escalation": { "type": "string" }
+        }
+      }
+    }
+  }
+}

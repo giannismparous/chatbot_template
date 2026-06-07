@@ -1,0 +1,111 @@
+# Widget registry (real keys — use registry.example.yaml as template)
+packages/config/clients/registry.yaml
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Firebase / GCP service accounts and credential JSON
+service-account.json
+*service-account*.json
+*firebase*.json
+*credentials*.json
+*secret*.json
+*-credentials.json
+google-credentials.json
+firebase-adminsdk*.json
+
+# API key files
+*api-key*
+*apikey*
+*.apikey
+
+# --- Per-client private data ---
+data/clients/*/uploads/
+data/clients/*/web_cache/
+data/clients/*/drive_cache/
+data/clients/*/logs/
+data/clients/*/traces/
+data/traces.sqlite3
+tests/fixtures/_traces_test.sqlite3
+data/clients/*/indexes/
+data/clients/*/db/
+data/clients/*/compliance/
+data/clients/*/reviewer/
+data/clients/**/chunks.sqlite3
+data/clients/**/chunks.db
+
+# Legacy shared defaults with private indexed content (local dev)
+packages/config/defaults/google_drive_index.json
+packages/config/defaults/vector_index.json
+packages/config/defaults/knowledge.json
+packages/config/defaults/chatbot.sqlite3
+
+# --- Databases ---
+*.sqlite
+*.sqlite3
+*.db
+
+# --- Vector / retrieval indexes ---
+*.faiss
+*.index
+**/faiss/
+**/qdrant_storage/
+.qdrant/
+
+# --- Generated test / eval outputs ---
+data/clients/*/tests/output/
+**/eval_run.json
+**/eval_report.json
+**/latest_eval_report.json
+**/deploy_record.json
+**/reviewer_export/
+**/*-expected-answers*.txt
+**/ingest_report.json
+
+# --- Cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# --- Python virtualenv ---
+.venv/
+venv/
+env/
+
+# --- Node / frontend ---
+node_modules/
+frontends/react-widget/node_modules/
+frontends/react-widget/dist/
+frontends/**/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Reference folders (optional local copies; do not commit client data from these) ---
+# Uncomment if POAMSKP/simasiaAI_website should stay local-only:
+# POAMSKP/
+# simasiaAI_website/
+
+# Nested project env files
+simasiaAI_website/.env
+simasiaAI_website/.env.*
+!simasiaAI_website/.env.example

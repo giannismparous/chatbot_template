@@ -1,0 +1,24 @@
+# Stack profile: optimal/enterprise target
+# DOCUMENTATION ONLY — not implemented. Do not set STACK_PROFILE=enterprise in production.
+# Factory should reject this profile until enterprise adapters exist.
+
+profile: enterprise
+status: documented_not_implemented
+description: PostgreSQL + Qdrant + BigQuery + Redis + multi-LLM router
+
+auth_provider: firebase_or_auth0_sso
+admin_auth_provider: enterprise_sso_rbac
+config_store: postgresql_or_firestore
+file_store: gcs_or_s3
+chunk_store: postgresql
+vector_store: qdrant_managed
+job_runner: cloud_run_jobs_or_k8s
+scheduler: cloud_scheduler_or_queue
+trace_store: postgresql_or_event_store
+metrics_store: bigquery
+session_store: redis
+llm_provider: multi_provider_router
+embedding_provider: multi_provider
+secrets: secret_manager_or_vault
+
+# Implementation target: post-MVP / enterprise tier only

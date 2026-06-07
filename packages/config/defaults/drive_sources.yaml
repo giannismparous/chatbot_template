@@ -1,0 +1,15 @@
+defaults:
+  chunk_size: 1200
+  overlap: 150
+  include_shared_drives: true
+  recursive: true
+  mime_types:
+    - application/vnd.google-apps.document
+    - text/plain
+    - application/pdf
+
+clients:
+  default:
+    roots:
+      - id: ""
+        label: "default-root"

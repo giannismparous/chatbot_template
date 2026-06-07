@@ -1,0 +1,14 @@
+display_name: Generic Client
+primary_language: en
+default_mode: hybrid_local
+modes:
+  - hybrid_local
+  - drive_hybrid
+  - vector_db
+source_weights:
+  local_files: 1.0
+  google_drive: 1.0
+  api: 1.0
+  db: 1.0
+regulated_mode: false
+suggested_questions: []

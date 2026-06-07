@@ -1,0 +1,27 @@
+version: 1
+client_id: default
+
+target:
+  index_scope: pending
+  mode: hybrid_local
+
+thresholds:
+  retrieval_min_pass_rate: 1.0
+  answer_min_pass_rate: 1.0
+  safety_min_pass_rate: 1.0
+  citation_min_pass_rate: 1.0
+  overall_min_pass_rate: 1.0
+
+required_categories:
+  - retrieval
+  - answer
+
+freshness_hours: 168
+
+regulated:
+  require_citation_tests: false
+
+export:
+  reviewer:
+    formats: [csv]
+    bundle_visibility: public_only

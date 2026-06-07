@@ -1,0 +1,12 @@
+faq:
+  strong_match_min_triggers: 1
+  strong_match_floor: 0.88
+
+rules:
+  domain_patterns:
+    - triggers: ["myrto", "myrtofly", "μυρτω"]
+      url_contains: []
+  topic_boosts:
+    - query_tokens: ["myrto", "myrtofly", "μυρτω"]
+      blob_tokens: ["myrto", "myrtofly", "κάπα3", "καθοδήγηση", "καρκινοπαθ"]
+      add: 0.35

@@ -1,0 +1,38 @@
+sparse:
+  method: bm25
+  pool_size: 25
+
+dense:
+  enabled: true
+  pool_size: 25
+
+fusion:
+  w_sparse: 0.45
+  w_dense: 0.35
+  w_faq: 0.20
+  normalize: minmax
+
+faq:
+  base_score: 2.5
+  strong_match_min_triggers: 2
+  strong_match_floor: 0.85
+
+rules:
+  domain_boost: 0.55
+  domain_penalty_factor: 0.12
+  domain_patterns: []
+  topic_boosts: []
+  penalties: []
+
+mmr:
+  enabled: true
+  lambda: 0.7
+  max_chunks_per_url: 2
+
+output:
+  send_to_model: 6
+  retrieve_pool: 24
+
+gate:
+  min_score: 0.18
+  no_context_message: I could not find relevant information in the available sources.
