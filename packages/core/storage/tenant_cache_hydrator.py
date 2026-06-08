@@ -9,6 +9,7 @@ from packages.core.ingestion.manifest import read_active_manifest
 from packages.core.ingestion.paths import active_manifest_key, active_manifest_path, knowledge_index_path
 from packages.core.ports.config_meta_store import ConfigMetaStore
 from packages.core.ports.file_store import FileStore
+from packages.core.storage.eval_output_sync import hydrate_client_eval_report
 from packages.core.tenant.paths import client_config_dir, safe_client_id
 
 logger = logging.getLogger(__name__)
@@ -210,7 +211,7 @@ def hydrate_client_index_state(
 
 
 def ensure_firebase_eval_assets_hydrated(*, client_id: str) -> int:
-    """Hydrate eval assets when running on firebase/GCS (no-op for local profile)."""
+    """Hydrate eval/deploy runtime assets when running on firebase/GCS (no-op for local profile)."""
     import os
 
     if os.getenv("STACK_PROFILE", "local").strip() != "firebase":
@@ -227,7 +228,8 @@ def ensure_firebase_eval_assets_hydrated(*, client_id: str) -> int:
     )
     eval_count = hydrate_client_eval_assets(client_id=client_id, file_store=stack.file_store)
     index_count = hydrate_client_index_state(client_id=client_id, file_store=stack.file_store)
-    return config_count + eval_count + index_count
+    report_count = hydrate_client_eval_report(client_id=client_id, file_store=stack.file_store)
+    return config_count + eval_count + index_count + report_count
 
 
 def hydrate_startup_tenant_configs(

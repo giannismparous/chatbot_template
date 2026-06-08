@@ -40,7 +40,7 @@ def _make_gcs_store(cache_root: Path, objects: dict[str, bytes]) -> GcsFileStore
     def _blob(name: str) -> MagicMock:
         blob = MagicMock()
         blob.name = name
-        blob.exists.return_value = name in objects
+        blob.exists.side_effect = lambda: name in objects
         blob.size = len(objects.get(name, b""))
 
         def download_to_filename(path: str) -> None:
@@ -48,7 +48,12 @@ def _make_gcs_store(cache_root: Path, objects: dict[str, bytes]) -> GcsFileStore
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(objects[name])
 
+        def upload_from_string(data, content_type=None) -> None:
+            payload = data if isinstance(data, bytes) else str(data).encode("utf-8")
+            objects[name] = payload
+
         blob.download_to_filename.side_effect = download_to_filename
+        blob.upload_from_string.side_effect = upload_from_string
         return blob
 
     bucket.blob.side_effect = _blob

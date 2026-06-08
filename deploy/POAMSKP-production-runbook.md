@@ -443,7 +443,7 @@ python -m apps.worker.jobs.migrate_to_gcs --client-id default --apply
 
 Paths resolve from repo root (`data/clients`, `packages/config/clients/registry.yaml`) regardless of shell CWD.
 
-**Canonical GCS layout:** `gs://${BUCKET}/clients/default/...` (matches `migrate_to_gcs`). Runtime also reads legacy `gs://${BUCKET}/default/...` if present. On firebase startup, **config** files are hydrated into `${TENANT_CACHE_ROOT}/default/config/` before the API loads tenant config. **Eval and deploy jobs** hydrate `tests/eval_suite.yaml`, `tests/cases/**`, optional `tests/fixtures/**` (never `tests/output/**`), and **index state** (`indexes/active_manifest.json` plus blobs under `indexes/versions/<pending|active|previous>/`) at run time so pending eval can read the manifest from an empty `/tmp` cache.
+**Canonical GCS layout:** `gs://${BUCKET}/clients/default/...` (matches `migrate_to_gcs`). Runtime also reads legacy `gs://${BUCKET}/default/...` if present. On firebase startup, **config** files are hydrated into `${TENANT_CACHE_ROOT}/default/config/` before the API loads tenant config. **Eval jobs** persist `tests/output/latest_eval_report.json` and the referenced run directory to GCS after a pass. **Deploy jobs** hydrate that latest pointer plus the referenced run dir (not historical output), along with `tests/eval_suite.yaml`, `tests/cases/**`, optional `tests/fixtures/**`, and **index state** (`indexes/active_manifest.json` plus blobs under `indexes/versions/<pending|active|previous>/`) from an empty `/tmp` cache.
 
 Verify object count:
 

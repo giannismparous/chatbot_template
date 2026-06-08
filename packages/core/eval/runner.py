@@ -111,6 +111,14 @@ def run_eval(
     latest_path = latest_eval_report_path(clients_root, cid)
     latest_path.parent.mkdir(parents=True, exist_ok=True)
     latest_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+    from packages.core.storage.eval_output_sync import persist_eval_output_if_firebase
+
+    persist_eval_output_if_firebase(
+        client_id=cid,
+        clients_root=clients_root,
+        run_dir=run_dir,
+        latest_path=latest_path,
+    )
     return report, run_dir
 
 
