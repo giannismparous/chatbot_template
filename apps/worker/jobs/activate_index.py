@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
+from apps.worker.jobs._tenant_storage import tenant_storage_for_worker
 from packages.core.config.loader import TenantConfigLoader
 from packages.core.eval.gate import assert_skip_gate_allowed
-from packages.core.ingestion.manifest import activate_pending_version, read_active_manifest
-from packages.core.ingestion.paths import active_manifest_path
+from packages.core.ingestion.manifest import (
+    activate_pending_version_storage,
+    read_active_manifest,
+    read_active_manifest_storage,
+)
+from packages.core.ingestion.paths import active_manifest_key, active_manifest_path
 from packages.core.stack.factory import project_root
+from packages.core.storage.keys import gcs_object_name
 from packages.core.tenant.paths import safe_client_id
+
+logger = logging.getLogger(__name__)
 
 
 def activate_index(*, clients_root: Path, client_id: str, skip_gate: bool = False) -> str:
@@ -23,11 +32,27 @@ def activate_index(*, clients_root: Path, client_id: str, skip_gate: bool = Fals
             client_id=cid,
             config_loader=config_loader,
         )
-    manifest_path = active_manifest_path(clients_root, cid)
-    before = read_active_manifest(manifest_path)
+
+    storage = tenant_storage_for_worker(clients_root)
+    storage_key = active_manifest_key()
+    canonical_key = gcs_object_name(cid, storage_key)
+    before = read_active_manifest_storage(storage, cid)
+    logger.info(
+        "Index activate: client=%s storage_key=%s before=%s",
+        cid,
+        canonical_key,
+        before.to_dict(),
+    )
     if not before.pending:
         raise ValueError(f"No pending version for client {cid!r}")
-    after = activate_pending_version(manifest_path)
+
+    after = activate_pending_version_storage(storage, cid)
+    logger.info(
+        "Index activate: client=%s storage_key=%s after=%s",
+        cid,
+        canonical_key,
+        after.to_dict(),
+    )
     if not after.active:
         raise RuntimeError("Activation did not set active version")
     return after.active
