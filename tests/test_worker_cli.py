@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apps.worker.cli import cmd_eval, main
+from apps.worker.cli import cmd_deploy, cmd_eval
 from packages.core.eval.models import EvalReport
 from packages.core.eval.report import eval_job_exit_code
 
@@ -78,6 +79,40 @@ def test_cmd_eval_returns_nonzero_when_not_deploy_eligible() -> None:
         patch("packages.core.eval.runner.run_eval", return_value=(report, run_dir)),
     ):
         assert cmd_eval(args) == 1
+
+
+def test_deploy_index_import_is_callable_function() -> None:
+    from apps.worker import cli as worker_cli
+
+    assert callable(worker_cli.deploy_index)
+    assert not inspect.ismodule(worker_cli.deploy_index)
+
+
+def test_cmd_deploy_returns_zero_on_success() -> None:
+    args = argparse.Namespace(client_id="default")
+
+    with (
+        patch("apps.worker.cli._clients_root", return_value=Path("/tmp/clients")),
+        patch("apps.worker.cli.deploy_index", return_value="2026-06-07T232651_0000") as deploy_mock,
+    ):
+        assert cmd_deploy(args) == 0
+        deploy_mock.assert_called_once_with(
+            clients_root=Path("/tmp/clients"),
+            client_id="default",
+        )
+
+
+def test_cmd_deploy_returns_nonzero_on_gate_failure() -> None:
+    args = argparse.Namespace(client_id="default")
+
+    with (
+        patch("apps.worker.cli._clients_root", return_value=Path("/tmp/clients")),
+        patch(
+            "apps.worker.cli.deploy_index",
+            side_effect=RuntimeError("Deploy gate blocked (eval_failed): report failed"),
+        ),
+    ):
+        assert cmd_deploy(args) == 1
 
 
 def test_main_rejects_non_int_handler_return() -> None:

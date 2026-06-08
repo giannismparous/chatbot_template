@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from apps.worker.jobs import activate_index, deploy_index, rollback_index
+from apps.worker.jobs import activate_index, rollback_index
+from apps.worker.jobs.deploy_index import deploy_index
 from packages.core.stack.factory import build_stack, project_root
 from packages.core.web_sources.service import crawl_client_web_sources
 
