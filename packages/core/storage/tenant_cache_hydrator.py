@@ -35,6 +35,10 @@ def _eval_assets_ready(clients_root: Path, client_id: str) -> bool:
 
 
 def _index_state_ready(clients_root: Path, client_id: str) -> bool:
+    return _pending_index_ready(clients_root, client_id)
+
+
+def _pending_index_ready(clients_root: Path, client_id: str) -> bool:
     cid = safe_client_id(client_id)
     manifest_path = active_manifest_path(clients_root, cid)
     if not manifest_path.is_file():

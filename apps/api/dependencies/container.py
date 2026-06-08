@@ -56,6 +56,11 @@ def build_orchestrator(config_loader: TenantConfigLoader) -> ChatOrchestrator:
     default_client = os.getenv("DEFAULT_CLIENT_ID", "default")
     stack = get_stack()
     if stack.profile == "firebase":
+        from packages.core.storage.api_runtime_hydrator import prepare_firebase_api_runtime_index
+
+        index_report = prepare_firebase_api_runtime_index(client_id=default_client, stack=stack)
+        index_report.emit()
+    else:
         from packages.core.storage.tenant_cache_hydrator import hydrate_client_config
 
         hydrate_client_config(

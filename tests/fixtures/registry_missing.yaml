@@ -1,7 +1,0 @@
-clients:
-  orphan:
-    display_name: Orphan
-    widget_keys:
-    - public_key: wk_orphan
-      allowed_origins:
-      - http://testserver
