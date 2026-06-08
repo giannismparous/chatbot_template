@@ -106,7 +106,7 @@ Uploads `clients/{client_id}/...` (canonical GCS layout via `gcs_object_name`) a
 
 **GCS layout (canonical):** `gs://BUCKET/clients/{client_id}/...`  
 Legacy `gs://BUCKET/{client_id}/...` is read at runtime for backward compatibility.  
-Runtime hydrates `config/*` on API startup; eval hydrates `tests/eval_suite.yaml`, `tests/cases/**`, optional `tests/fixtures/**` (never `tests/output/**`).
+Runtime hydrates `config/*` on API startup; eval and deploy gate hydrate `tests/eval_suite.yaml`, `tests/cases/**`, optional `tests/fixtures/**` (never `tests/output/**`), plus `indexes/active_manifest.json` and pending/active/previous version blobs under `indexes/versions/**`.
 
 
 

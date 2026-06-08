@@ -13,9 +13,13 @@ from packages.core.control_plane.models import ConfigMetaRecord
 from packages.core.config.loader import TenantConfigLoader
 from packages.core.stack.factory import project_root
 from packages.core.storage.keys import gcs_object_name, gcs_object_name_candidates
+from packages.core.eval.index_scope import eval_index_scope
+from packages.core.ingestion.manifest import read_active_manifest
+from packages.core.ingestion.paths import active_manifest_path, knowledge_index_path
 from packages.core.storage.tenant_cache_hydrator import (
     hydrate_client_config,
     hydrate_client_eval_assets,
+    hydrate_client_index_state,
 )
 from packages.core.eval.loader import load_eval_suite, load_eval_cases
 from packages.core.tenant.paths import client_config_dir
@@ -256,3 +260,86 @@ def test_firebase_build_stack_hydrates_default_client(tmp_path: Path, monkeypatc
     )
     merged = loader.load("default")
     assert merged.client_id == "default"
+
+
+PENDING_VERSION = "2026-06-07T232651_0000"
+ACTIVE_MANIFEST = (
+    b'{"active": null, "pending": "'
+    + PENDING_VERSION.encode()
+    + b'", "previous": null}\n'
+)
+KNOWLEDGE_INDEX = (
+    b'{"client_id":"default","version_id":"'
+    + PENDING_VERSION.encode()
+    + b'","chunks":[{"id":"c1","content":"hello","title":"t"}]}\n'
+)
+VECTOR_INDEX = b'{"vectors":[{"chunk_id":"c1","embedding":[0.1,0.2]}],"embedding_model":"test","embedding_dims":2}\n'
+
+
+def test_hydrate_index_state_from_gcs(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    store = _make_gcs_store(
+        cache,
+        {
+            gcs_object_name("default", "indexes/active_manifest.json"): ACTIVE_MANIFEST,
+            gcs_object_name(
+                "default",
+                f"indexes/versions/{PENDING_VERSION}/knowledge_index.json",
+            ): KNOWLEDGE_INDEX,
+            gcs_object_name(
+                "default",
+                f"indexes/versions/{PENDING_VERSION}/vector_index.json",
+            ): VECTOR_INDEX,
+        },
+    )
+    assert not active_manifest_path(cache, "default").is_file()
+    count = hydrate_client_index_state(client_id="default", file_store=store)
+    assert count >= 3
+    manifest = read_active_manifest(active_manifest_path(cache, "default"))
+    assert manifest.pending == PENDING_VERSION
+    assert knowledge_index_path(cache, "default", PENDING_VERSION).is_file()
+
+
+def test_firebase_eval_hydration_enables_pending_index_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.core.stack import factory
+    from packages.core.storage.tenant_cache_hydrator import ensure_firebase_eval_assets_hydrated
+
+    cache = tmp_path / "cache"
+    gcs_store = _make_gcs_store(
+        cache,
+        {
+            gcs_object_name("default", "config/client.yaml"): MINIMAL_CLIENT_YAML,
+            gcs_object_name("default", "tests/eval_suite.yaml"): MINIMAL_EVAL_SUITE,
+            gcs_object_name("default", "tests/cases/smoke.yaml"): MINIMAL_EVAL_CASE,
+            gcs_object_name("default", "indexes/active_manifest.json"): ACTIVE_MANIFEST,
+            gcs_object_name(
+                "default",
+                f"indexes/versions/{PENDING_VERSION}/knowledge_index.json",
+            ): KNOWLEDGE_INDEX,
+            gcs_object_name(
+                "default",
+                f"indexes/versions/{PENDING_VERSION}/vector_index.json",
+            ): VECTOR_INDEX,
+        },
+    )
+
+    monkeypatch.setenv("STACK_PROFILE", "firebase")
+    monkeypatch.setenv("FIRESTORE_CONTROL_PLANE", "false")
+    monkeypatch.setenv("GCS_REGISTRY_FALLBACK", "true")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "secret")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "demo")
+    monkeypatch.setenv("GCS_BUCKET", "simasia-chatbot-prod-demo")
+    monkeypatch.setenv("TENANT_CACHE_ROOT", str(cache))
+    monkeypatch.setenv(
+        "CLIENT_REGISTRY_PATH",
+        str(project_root() / "tests" / "fixtures" / "registry.yaml"),
+    )
+    monkeypatch.setattr(factory, "build_file_store", lambda profile, stack_yaml, root: gcs_store)
+
+    ensure_firebase_eval_assets_hydrated(client_id="default")
+    with eval_index_scope(cache, "default", scope="pending") as scope:
+        assert scope.version_id == PENDING_VERSION
+        assert scope.manifest_path.is_file()

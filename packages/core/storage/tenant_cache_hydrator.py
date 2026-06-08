@@ -5,6 +5,8 @@ from pathlib import Path
 
 from packages.adapters.storage.gcs_file_store import GcsFileStore
 from packages.core.config.loader import CONFIG_FILES, FAQ_FILENAME
+from packages.core.ingestion.manifest import read_active_manifest
+from packages.core.ingestion.paths import active_manifest_key, active_manifest_path, knowledge_index_path
 from packages.core.ports.config_meta_store import ConfigMetaStore
 from packages.core.ports.file_store import FileStore
 from packages.core.tenant.paths import client_config_dir, safe_client_id
@@ -18,6 +20,7 @@ DEFAULT_CONFIG_KEYS = (
 )
 
 EVAL_SUITE_KEY = "tests/eval_suite.yaml"
+ACTIVE_MANIFEST_KEY = active_manifest_key()
 
 
 def _config_dir_ready(clients_root: Path, client_id: str) -> bool:
@@ -28,6 +31,56 @@ def _config_dir_ready(clients_root: Path, client_id: str) -> bool:
 def _eval_assets_ready(clients_root: Path, client_id: str) -> bool:
     tests_root = clients_root / safe_client_id(client_id) / "tests"
     return (tests_root / "eval_suite.yaml").is_file() and (tests_root / "cases").is_dir()
+
+
+def _index_state_ready(clients_root: Path, client_id: str) -> bool:
+    cid = safe_client_id(client_id)
+    manifest_path = active_manifest_path(clients_root, cid)
+    if not manifest_path.is_file():
+        return False
+    manifest = read_active_manifest(manifest_path)
+    if not manifest.pending:
+        return False
+    return knowledge_index_path(clients_root, cid, manifest.pending).is_file()
+
+
+def _collect_index_keys(
+    file_store: GcsFileStore,
+    client_id: str,
+    *,
+    include_active: bool = True,
+    include_previous: bool = True,
+) -> list[str]:
+    cid = safe_client_id(client_id)
+    keys: set[str] = {ACTIVE_MANIFEST_KEY}
+
+    clients_root = file_store.get_local_clients_root()
+    manifest_path = active_manifest_path(clients_root, cid)
+    manifest = read_active_manifest(manifest_path) if manifest_path.is_file() else None
+
+    if manifest is None:
+        try:
+            file_store.read_bytes(cid, ACTIVE_MANIFEST_KEY)
+            manifest = read_active_manifest(active_manifest_path(clients_root, cid))
+        except FileNotFoundError:
+            return sorted(keys)
+
+    versions: set[str] = set()
+    if manifest:
+        if manifest.pending:
+            versions.add(manifest.pending)
+        if include_active and manifest.active:
+            versions.add(manifest.active)
+        if include_previous and manifest.previous:
+            versions.add(manifest.previous)
+
+    for version_id in sorted(versions):
+        prefix = f"indexes/versions/{version_id}/"
+        for obj in file_store.list_prefix(cid, prefix):
+            if obj.key.startswith(prefix):
+                keys.add(obj.key)
+
+    return sorted(keys)
 
 
 def _should_hydrate_test_key(relative_key: str) -> bool:
@@ -130,6 +183,32 @@ def hydrate_client_eval_assets(
     return _download_keys(file_store, cid, keys)
 
 
+def hydrate_client_index_state(
+    *,
+    client_id: str,
+    file_store: FileStore,
+    force: bool = False,
+    include_active: bool = True,
+    include_previous: bool = True,
+) -> int:
+    """Download active manifest and index version blobs from GCS into the local cache."""
+    if not isinstance(file_store, GcsFileStore):
+        return 0
+
+    cid = safe_client_id(client_id)
+    clients_root = file_store.get_local_clients_root()
+    if not force and _index_state_ready(clients_root, cid):
+        return 0
+
+    keys = _collect_index_keys(
+        file_store,
+        cid,
+        include_active=include_active,
+        include_previous=include_previous,
+    )
+    return _download_keys(file_store, cid, keys)
+
+
 def ensure_firebase_eval_assets_hydrated(*, client_id: str) -> int:
     """Hydrate eval assets when running on firebase/GCS (no-op for local profile)."""
     import os
@@ -147,7 +226,8 @@ def ensure_firebase_eval_assets_hydrated(*, client_id: str) -> int:
         config_meta_store=stack.config_meta_store,
     )
     eval_count = hydrate_client_eval_assets(client_id=client_id, file_store=stack.file_store)
-    return config_count + eval_count
+    index_count = hydrate_client_index_state(client_id=client_id, file_store=stack.file_store)
+    return config_count + eval_count + index_count
 
 
 def hydrate_startup_tenant_configs(

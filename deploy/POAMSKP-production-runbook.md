@@ -443,7 +443,7 @@ python -m apps.worker.jobs.migrate_to_gcs --client-id default --apply
 
 Paths resolve from repo root (`data/clients`, `packages/config/clients/registry.yaml`) regardless of shell CWD.
 
-**Canonical GCS layout:** `gs://${BUCKET}/clients/default/...` (matches `migrate_to_gcs`). Runtime also reads legacy `gs://${BUCKET}/default/...` if present. On firebase startup, **config** files are hydrated into `${TENANT_CACHE_ROOT}/default/config/` before the API loads tenant config. **Eval jobs** hydrate `tests/eval_suite.yaml`, `tests/cases/**`, and optional `tests/fixtures/**` at run time (never `tests/output/**`).
+**Canonical GCS layout:** `gs://${BUCKET}/clients/default/...` (matches `migrate_to_gcs`). Runtime also reads legacy `gs://${BUCKET}/default/...` if present. On firebase startup, **config** files are hydrated into `${TENANT_CACHE_ROOT}/default/config/` before the API loads tenant config. **Eval and deploy jobs** hydrate `tests/eval_suite.yaml`, `tests/cases/**`, optional `tests/fixtures/**` (never `tests/output/**`), and **index state** (`indexes/active_manifest.json` plus blobs under `indexes/versions/<pending|active|previous>/`) at run time so pending eval can read the manifest from an empty `/tmp` cache.
 
 Verify object count:
 
