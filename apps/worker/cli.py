@@ -43,6 +43,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
+    from packages.core.eval.report import eval_job_exit_code
     from packages.core.eval.runner import run_eval
 
     root = _clients_root()
@@ -54,7 +55,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     )
     print(f"Eval {report.run_id}: status={report.status} deploy_eligible={report.deploy_eligible}")
     print(f"Report: {run_dir / 'eval_report.json'}")
-    return 0 if report.status == "passed" else 1
+    return eval_job_exit_code(report)
 
 
 def cmd_crawl(args: argparse.Namespace) -> int:
@@ -168,6 +169,9 @@ def main(argv: list[str] | None = None) -> None:
     if handler is None:
         parser.error("No handler configured.")
     code = handler(args)
+    if type(code) is not int:
+        handler_name = getattr(handler, "__name__", type(handler).__name__)
+        raise TypeError(f"Worker handler {handler_name} must return int exit code, got {type(code).__name__}")
     raise SystemExit(code)
 
 

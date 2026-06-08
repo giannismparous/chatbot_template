@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from packages.core.eval.report import eval_job_exit_code
 from packages.core.eval.runner import run_eval
 from packages.core.stack.factory import project_root
 
@@ -53,8 +54,7 @@ def main() -> None:
     print(f"Report: {run_dir / 'eval_report.json'}")
     if report.failure_reasons:
         print("Failures:", ", ".join(report.failure_reasons))
-    if report.status != "pass":
-        raise SystemExit(1)
+    raise SystemExit(eval_job_exit_code(report))
 
 
 if __name__ == "__main__":

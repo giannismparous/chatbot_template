@@ -16,6 +16,11 @@ from packages.core.eval.requirements import EvalRequirements
 from packages.core.ingestion.manifest import utc_now_iso
 
 
+def eval_job_exit_code(report: EvalReport) -> int:
+    """Process exit code for eval worker jobs: 0 only when pass and deploy-eligible."""
+    return 0 if report.status == "pass" and report.deploy_eligible else 1
+
+
 def build_eval_report(
     *,
     run_id: str,
