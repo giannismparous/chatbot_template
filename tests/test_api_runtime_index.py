@@ -29,6 +29,7 @@ source_weights: {}
 """
 
 ACTIVE_VERSION = "2026-06-08T051814_0000"
+LEGACY_STALE_VERSION = "2026-06-07T232651_0000"
 POAMSKP_CHUNK_CONTENT = (
     "Η Πανελλήνια Ομοσπονδία Ατόμων με Σκλήρυνση Κατά Πλάκας (ΠΟΑμΣΚΠ) "
     "είναι η εθνική ομοσπονδία για τη σκλήρυνση κατά πλάκας στην Ελλάδα."
@@ -125,6 +126,32 @@ def _canonical_index_objects() -> dict[str, bytes]:
     }
 
 
+def _legacy_stale_index_objects() -> dict[str, bytes]:
+    version_prefix = f"indexes/versions/{LEGACY_STALE_VERSION}"
+    return {
+        f"default/indexes/active_manifest.json": json.dumps(
+            {"active": LEGACY_STALE_VERSION, "pending": None, "previous": None},
+            ensure_ascii=False,
+        ).encode("utf-8"),
+        f"default/{version_prefix}/knowledge_index.json": json.dumps(
+            {
+                "client_id": "default",
+                "version_id": LEGACY_STALE_VERSION,
+                "chunks": [
+                    {
+                        "id": "legacy-stale",
+                        "source_id": "legacy",
+                        "title": "legacy",
+                        "content": "legacy stale index that should not be used",
+                        "language": "en",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8"),
+    }
+
+
 def _firebase_env(monkeypatch: pytest.MonkeyPatch, cache: Path) -> None:
     monkeypatch.setenv("STACK_PROFILE", "firebase")
     monkeypatch.setenv("FIRESTORE_CONTROL_PLANE", "false")
@@ -168,6 +195,30 @@ def test_hydrate_active_index_from_canonical_gcs_only(tmp_path: Path) -> None:
     assert index.version_id == ACTIVE_VERSION
     assert len(index.chunks) == 1
     assert "ΠΟΑμΣΚΠ" in index.chunks[0].content
+
+
+def test_api_runtime_prefers_canonical_when_legacy_is_stale(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    objects = _canonical_index_objects()
+    objects.update(_legacy_stale_index_objects())
+    store = _make_gcs_store(cache, objects)
+
+    report = hydrate_client_active_index_for_runtime(
+        client_id="default",
+        file_store=store,
+        force=True,
+    )
+    assert report.active_version == ACTIVE_VERSION
+    assert report.knowledge_index_exists is True
+
+    index = load_tenant_index(
+        clients_root=cache,
+        client_id="default",
+        legacy_fallback_path=project_root() / "packages" / "config" / "defaults" / "knowledge.json",
+    )
+    assert index.version_id == ACTIVE_VERSION
+    assert len(index.chunks) == 1
+    assert "legacy stale index" not in index.chunks[0].content.lower()
 
 
 def test_firebase_api_runtime_retrieves_poamskp_chunk(
