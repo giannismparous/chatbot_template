@@ -20,4 +20,7 @@ COPY packages ./packages
 COPY config ./config
 COPY packages/domain_packs ./packages/domain_packs
 
+ARG GIT_SHA=unknown
+ENV APP_GIT_SHA=${GIT_SHA}
+
 ENTRYPOINT ["python", "-m", "apps.worker.cli"]

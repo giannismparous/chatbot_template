@@ -286,8 +286,11 @@ gcloud builds submit \
 gcloud builds submit \
   --project=${PROJECT_ID} \
   --tag gcr.io/${PROJECT_ID}/chatbot-worker:latest \
-  --dockerfile=deploy/Dockerfile.worker .
+  --dockerfile=deploy/Dockerfile.worker \
+  --build-arg GIT_SHA=$(git rev-parse --short HEAD) .
 ```
+
+Ingest logs must include `[ingest-prep]` and `[drive-ingest]` lines (stdout). If missing, the job is running an old worker image.
 
 ---
 

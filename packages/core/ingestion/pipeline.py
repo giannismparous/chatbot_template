@@ -108,11 +108,13 @@ def ingest_client_uploads(
     version_id: str | None = None,
     embedding_provider: EmbeddingProvider | None = None,
     storage: TenantStorage | None = None,
+    skip_runtime_hydration: bool = False,
 ) -> IngestResult:
     cid = safe_client_id(client_id)
-    from packages.core.storage.drive_cache_hydrator import ensure_firebase_ingest_assets_hydrated
+    if not skip_runtime_hydration:
+        from packages.core.storage.drive_cache_hydrator import ensure_firebase_ingest_assets_hydrated
 
-    ensure_firebase_ingest_assets_hydrated(client_id=cid)
+        ensure_firebase_ingest_assets_hydrated(client_id=cid)
     store = resolve_storage(clients_root=clients_root, storage=storage)
     clients_root = store.clients_root()
     settings = load_ingestion_settings(config_loader, cid)

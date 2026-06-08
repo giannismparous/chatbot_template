@@ -74,11 +74,12 @@ def ingest_drive_cache_sources(
     files_root = drive_cache_files_dir(clients_root, client_id)
 
     if not stats.manifest_loaded:
-        logger.info(
-            "Drive ingest client=%s manifest_loaded=no enabled_sources=%s",
-            client_id,
-            sum(1 for s in drive_config.sources if s.enabled),
+        msg = (
+            f"[drive-ingest] client={client_id} manifest_loaded=no "
+            f"enabled_sources={sum(1 for s in drive_config.sources if s.enabled)}"
         )
+        logger.info(msg)
+        print(msg, flush=True)
         return chunk_seq
 
     for source in drive_config.sources:
@@ -222,20 +223,13 @@ def ingest_drive_cache_sources(
 
     stats.chunks_after = len(chunks)
     stats.sources_after = len(sources)
-    logger.info(
-        "Drive ingest client=%s manifest_loaded=%s discovered=%s indexable=%s "
-        "skipped_by_status=%s missing_cache_file=%s empty_content=%s "
-        "sources=%s->%s chunks=%s->%s",
-        client_id,
-        stats.manifest_loaded,
-        stats.files_discovered,
-        stats.indexable,
-        stats.skipped_by_status,
-        stats.missing_cache_file,
-        stats.empty_content,
-        stats.sources_before,
-        stats.sources_after,
-        stats.chunks_before,
-        stats.chunks_after,
+    summary = (
+        f"[drive-ingest] client={client_id} manifest_loaded={stats.manifest_loaded} "
+        f"discovered={stats.files_discovered} indexable={stats.indexable} "
+        f"skipped_by_status={stats.skipped_by_status} missing_cache_file={stats.missing_cache_file} "
+        f"empty_content={stats.empty_content} sources={stats.sources_before}->{stats.sources_after} "
+        f"chunks={stats.chunks_before}->{stats.chunks_after}"
     )
+    logger.info(summary)
+    print(summary, flush=True)
     return chunk_seq

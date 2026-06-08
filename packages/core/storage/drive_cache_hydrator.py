@@ -106,35 +106,17 @@ def hydrate_client_drive_cache(
         except FileNotFoundError:
             logger.warning("Drive cache blob missing in GCS for client=%s key=%s", cid, storage_key)
     if hydrated:
-        logger.info("Hydrated %s drive cache blob(s) for client=%s", hydrated, cid)
+        msg = f"[ingest-prep] Hydrated {hydrated} drive cache blob(s) for client={cid}"
+        logger.info(msg)
+        print(msg, flush=True)
     return hydrated
 
 
 def ensure_firebase_ingest_assets_hydrated(*, client_id: str) -> int:
     """Hydrate config, drive cache, and active index state for ingest jobs on firebase/GCS."""
-    import os
-
-    if os.getenv("STACK_PROFILE", "local").strip() != "firebase":
-        return 0
     from packages.core.stack.factory import build_stack
-    from packages.core.storage.tenant_cache_hydrator import (
-        hydrate_client_config,
-        hydrate_client_index_state,
-    )
+    from packages.core.storage.ingest_runtime import prepare_firebase_ingest
 
     stack = build_stack()
-    if not isinstance(stack.file_store, GcsFileStore):
-        return 0
-    config_count = hydrate_client_config(
-        client_id=client_id,
-        file_store=stack.file_store,
-        config_meta_store=stack.config_meta_store,
-    )
-    drive_count = hydrate_client_drive_cache(client_id=client_id, file_store=stack.file_store)
-    index_count = hydrate_client_index_state(
-        client_id=client_id,
-        file_store=stack.file_store,
-        include_active=True,
-        include_previous=False,
-    )
-    return config_count + drive_count + index_count
+    report = prepare_firebase_ingest(client_id=client_id, stack=stack)
+    return report.config_hydrated + report.drive_cache_hydrated + report.index_hydrated

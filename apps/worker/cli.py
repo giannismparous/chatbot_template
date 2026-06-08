@@ -25,16 +25,20 @@ def _config_loader(clients_root):
 
 def cmd_ingest(args: argparse.Namespace) -> int:
     from packages.core.ingestion.pipeline import ingest_client_uploads
+    from packages.core.storage.ingest_runtime import prepare_firebase_ingest
 
-    root = _clients_root()
-    loader = _config_loader(root)
     stack = build_stack()
+    root = stack.config_store.get_clients_root()
+    loader = _config_loader(root)
+    prep = prepare_firebase_ingest(client_id=args.client_id, stack=stack)
+    prep.emit()
     result = ingest_client_uploads(
         clients_root=root,
         client_id=args.client_id,
         config_loader=loader,
         version_id=args.version_id,
         storage=stack.tenant_storage,
+        skip_runtime_hydration=True,
     )
     print(
         f"Ingest complete for {result.client_id}: version={result.version_id} "
