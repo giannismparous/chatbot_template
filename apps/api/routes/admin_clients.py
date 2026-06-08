@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from apps.api.dependencies.admin_services import get_registry_service
 from apps.api.dependencies.auth import require_admin_token
@@ -113,13 +113,17 @@ def rotate_widget_key(
     )
 
 
-@router.post("/{client_id}/widget-keys/{key_id}/revoke", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/{client_id}/widget-keys/{key_id}/revoke",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
 def revoke_widget_key(
     client_id: str,
     key_id: str,
     admin: AdminContext = Depends(require_admin_token),
     registry: ClientRegistryService = Depends(get_registry_service),
-) -> None:
+) -> Response:
     _ = admin
     try:
         registry.revoke_widget_key(client_id, key_id)
@@ -127,3 +131,4 @@ def revoke_widget_key(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except NotImplementedError as exc:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

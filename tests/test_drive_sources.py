@@ -250,6 +250,7 @@ def test_drive_cache_ingested_internal(tmp_path: Path) -> None:
                                 "mime_type": "text/plain",
                                 "status": "synced",
                                 "cache_file": "faq_file1.txt",
+                                "char_count": len(GOOD_TEXT),
                             }
                         },
                     }
