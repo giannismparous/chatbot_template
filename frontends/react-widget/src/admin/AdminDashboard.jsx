@@ -8,6 +8,7 @@ import { UploadPanel } from "./components/UploadPanel.jsx";
 import { WebSourcesPanel } from "./components/WebSourcesPanel.jsx";
 import { DriveSourcesPanel } from "./components/DriveSourcesPanel.jsx";
 import { PipelinePanel, EvalSummaryCard, MetricsCard } from "./components/PipelinePanel.jsx";
+import { PipelineAutomationPanel } from "./components/PipelineAutomationPanel.jsx";
 import { AdminPreviewPanel } from "./components/AdminPreviewPanel.jsx";
 import { WidgetEnvSnippet } from "./components/WidgetEnvSnippet.jsx";
 
@@ -112,6 +113,12 @@ function AdminDashboardBody() {
           <UploadPanel clientId={clientId} onChange={refreshClientState} />
           <WebSourcesPanel clientId={clientId} onChange={refreshClientState} />
           <DriveSourcesPanel clientId={clientId} onChange={refreshClientState} />
+          <PipelineAutomationPanel
+            clientId={clientId}
+            indexStatus={indexStatus}
+            evalSummary={evalSummary}
+            onRefresh={refreshClientState}
+          />
           <PipelinePanel
             clientId={clientId}
             indexStatus={indexStatus}

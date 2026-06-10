@@ -11,6 +11,7 @@ class JobType(str, Enum):
     EVAL = "eval"
     CRAWL = "crawl"
     DRIVE_SYNC = "drive_sync"
+    DEPLOY = "deploy"
 
 
 class JobStatus(str, Enum):

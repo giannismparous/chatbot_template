@@ -205,6 +205,22 @@ export async function previewChat(token, clientId, { message, indexScope = "acti
   };
 }
 
+export async function runPipeline(token, clientId, payload = {}) {
+  return adminFetch(token, `/${encodeURIComponent(clientId)}/pipeline/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getPipelineStatus(token, clientId, pipelineId) {
+  return adminFetch(token, `/${encodeURIComponent(clientId)}/pipeline/status/${encodeURIComponent(pipelineId)}`);
+}
+
+export async function listPipelineRuns(token, clientId) {
+  return adminFetch(token, `/${encodeURIComponent(clientId)}/pipeline/runs`);
+}
+
 export async function runJobAndWait(token, clientId, jobId, { pollMs = 1500, timeoutMs = 120000, getJobFn = getJob } = {}) {
   const terminal = new Set(["succeeded", "failed"]);
   const start = Date.now();

@@ -214,7 +214,7 @@ for ROLE in \
 done
 ```
 
-`roles/run.developer` lets the API trigger Cloud Run Jobs when `CLOUD_RUN_JOBS_USE_GCLOUD=true`.
+`roles/run.developer` lets the API trigger and poll Cloud Run Jobs via the Jobs API (Phase 21A). Do **not** set `CLOUD_RUN_JOBS_USE_GCLOUD=true` on the API.
 
 **Worker service account:**
 
@@ -454,6 +454,53 @@ Verify object count:
 gcloud storage ls -r gs://${BUCKET}/clients/default/ | head
 gcloud storage ls gs://${BUCKET}/platform/
 ```
+
+---
+
+## 10b. Admin pipeline run (Phase 21A — preferred for normal operations)
+
+After the API is deployed with Firestore control plane, use the **admin pipeline API** or the React admin dashboard **Pipeline automation** panel instead of running each Cloud Run job manually.
+
+**Presets:**
+
+| Preset | Steps |
+|--------|--------|
+| `sync_only` | drive-sync |
+| `ingest_eval` | ingest → eval |
+| `full_deploy` | drive-sync → ingest → eval → deploy |
+
+**API (admin token required):**
+
+```bash
+export API_URL=https://simasia-chatbot-api-....run.app
+export ADMIN_TOKEN=...
+
+# Full pipeline for client default
+curl -s -X POST "${API_URL}/v1/admin/clients/default/pipeline/run" \
+  -H "x-admin-token: ${ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"preset":"full_deploy","eval_llm_mode":"live"}'
+
+# Poll status
+curl -s "${API_URL}/v1/admin/clients/default/pipeline/status/PIPELINE_ID" \
+  -H "x-admin-token: ${ADMIN_TOKEN}"
+
+# List recent runs
+curl -s "${API_URL}/v1/admin/clients/default/pipeline/runs" \
+  -H "x-admin-token: ${ADMIN_TOKEN}"
+```
+
+**Safety:** Deploy runs only when eval `status=pass` and `deploy_eligible=true`. Empty ingest (`chunks_total=0`) blocks deploy unless `force_empty_deploy=true`.
+
+**After deploy:** Restart the Cloud Run API service (or redeploy) so runtime index hydration loads the new active version. The pipeline response includes `runtime_refresh_note` when deploy succeeds.
+
+**Cloud Run dispatch:** The API uses the Cloud Run Jobs API (ADC) — not `gcloud` in the container. Set `CLOUD_RUN_JOBS_DISABLED=false` on the API service when worker jobs should execute remotely. The pipeline orchestrator polls execution status and hydrates GCS results into `/tmp` before the next step. Manual `gcloud run jobs execute` remains a fallback.
+
+**Async contract:** `POST /pipeline/run` returns **HTTP 202** with `pipeline_id` and `status=pending` immediately. Orchestration runs in a background thread; poll `GET /pipeline/status/{pipeline_id}`. Do **not** set `ADMIN_JOBS_SYNC` on the API service.
+
+**Smoke checklist:** [POAMSKP-phase21a-smoke.md](./POAMSKP-phase21a-smoke.md)
+
+**Phase 21A client_id:** Container arg overrides pass `--client-id {client_id}` to worker CLI. POAMSKP uses `default`; multi-tenant dynamic jobs are Phase 21B.
 
 ---
 

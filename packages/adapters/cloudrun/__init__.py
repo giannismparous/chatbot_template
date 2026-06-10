@@ -1,0 +1,1 @@
+"""Cloud Run integration adapters."""

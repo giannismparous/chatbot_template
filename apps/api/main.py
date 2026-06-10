@@ -18,6 +18,7 @@ from apps.api.routes.admin_client_uploads import router as admin_client_uploads_
 from apps.api.routes.admin_client_drive_sources import router as admin_client_drive_sources_router
 from apps.api.routes.admin_client_web_sources import router as admin_client_web_sources_router
 from apps.api.routes.admin_client_jobs import router as admin_client_jobs_router
+from apps.api.routes.admin_client_pipeline import router as admin_client_pipeline_router
 from apps.api.routes.chat import router as chat_router
 from apps.api.routes.chat_v2 import router as chat_v2_router
 from apps.api.routes.admin_preview import router as admin_preview_router
@@ -48,6 +49,7 @@ app.include_router(admin_client_uploads_router)
 app.include_router(admin_client_web_sources_router)
 app.include_router(admin_client_drive_sources_router)
 app.include_router(admin_client_jobs_router)
+app.include_router(admin_client_pipeline_router)
 app.include_router(admin_preview_router)
 app.include_router(admin_traces_router)
 app.include_router(admin_router)

@@ -108,6 +108,8 @@ Uploads `clients/{client_id}/...` (canonical GCS layout via `gcs_object_name`) a
 Legacy `gs://BUCKET/{client_id}/...` is read at runtime for backward compatibility.  
 Runtime hydrates `config/*` on API startup; eval and deploy gate hydrate `tests/eval_suite.yaml`, `tests/cases/**`, optional `tests/fixtures/**`, plus `indexes/active_manifest.json` and pending/active/previous version blobs under `indexes/versions/**`. Eval jobs persist `tests/output/latest_eval_report.json` and the referenced run directory to GCS; deploy jobs hydrate only that latest pointer and run dir (not historical output).
 
+**Phase 21A admin pipeline:** `POST /v1/admin/clients/{client_id}/pipeline/run` with presets `sync_only`, `ingest_eval`, or `full_deploy` chains drive-sync → ingest → eval → deploy. Status is stored in Firestore (`clients/{id}/pipelines/{pipeline_id}`). Cloud Run job dispatch uses the Jobs API (ADC), not `gcloud` in the API container. Manual `gcloud run jobs execute` remains a fallback.
+
 
 
 **Note:** Plaintext widget keys in `platform/registry.yaml` are **staging-only** until Phase 20 hashed storage.

@@ -17,6 +17,8 @@ from packages.core.control_plane.widget_key_hmac import (
     widget_key_display_prefix,
 )
 from packages.core.jobs.models import JobRecord, utc_now
+from packages.core.pipeline.models import PipelineRunRecord, utc_now as pipeline_utc_now
+from packages.core.ports.pipeline_store import PipelineStore
 from packages.core.ports.client_registry import ClientRegistryStore
 from packages.core.ports.config_meta_store import ConfigMetaStore
 from packages.core.ports.job_store import JobStore
@@ -256,3 +258,30 @@ class InMemoryJobStore(JobStore):
     def list_jobs(self, client_id: str, *, limit: int = 50) -> list[JobRecord]:
         cid = safe_client_id(client_id)
         return [JobRecord.from_dict(doc) for doc in self._backend.list_jobs(cid, limit=limit)]
+
+
+class FirestorePipelineStore(PipelineStore):
+    def __init__(self, backend) -> None:
+        self._backend = backend
+
+    def create(self, record: PipelineRunRecord) -> PipelineRunRecord:
+        self._backend.upsert_pipeline(record.client_id, record.pipeline_id, record.to_dict())
+        return record
+
+    def update(self, record: PipelineRunRecord) -> None:
+        record.updated_at = pipeline_utc_now()
+        self._backend.upsert_pipeline(record.client_id, record.pipeline_id, record.to_dict())
+
+    def get(self, client_id: str, pipeline_id: str) -> PipelineRunRecord | None:
+        cid = safe_client_id(client_id)
+        doc = self._backend.get_pipeline(cid, pipeline_id)
+        if not doc:
+            return None
+        return PipelineRunRecord.from_dict(doc)
+
+    def list_runs(self, client_id: str, *, limit: int = 20) -> list[PipelineRunRecord]:
+        cid = safe_client_id(client_id)
+        return [
+            PipelineRunRecord.from_dict(doc)
+            for doc in self._backend.list_pipelines(cid, limit=limit)
+        ]

@@ -115,6 +115,42 @@ class GoogleFirestoreBackend:
         )
         return [snap.to_dict() or {} for snap in query.stream()]
 
+    def upsert_pipeline(self, client_id: str, pipeline_id: str, data: dict[str, Any]) -> None:
+        cid = safe_client_id(client_id)
+        doc_ref = self._clients().document(cid).collection("pipelines").document(pipeline_id)
+        doc_ref.set(data, merge=True)
+        expires_at = data.get("expires_at")
+        if expires_at is None:
+            created = data.get("created_at")
+            if created:
+                try:
+                    created_dt = datetime.fromisoformat(str(created))
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    from datetime import timedelta
+
+                    doc_ref.update({"expires_at": (created_dt + timedelta(days=90)).isoformat()})
+                except ValueError:
+                    pass
+
+    def get_pipeline(self, client_id: str, pipeline_id: str) -> dict[str, Any] | None:
+        cid = safe_client_id(client_id)
+        snap = self._clients().document(cid).collection("pipelines").document(pipeline_id).get()
+        if not snap.exists:
+            return None
+        return snap.to_dict()
+
+    def list_pipelines(self, client_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        cid = safe_client_id(client_id)
+        query = (
+            self._clients()
+            .document(cid)
+            .collection("pipelines")
+            .order_by("created_at", direction="DESCENDING")
+            .limit(limit)
+        )
+        return [snap.to_dict() or {} for snap in query.stream()]
+
 
 def build_google_firestore_client() -> Any:
     from google.cloud import firestore

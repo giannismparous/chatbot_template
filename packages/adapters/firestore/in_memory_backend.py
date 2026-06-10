@@ -24,6 +24,7 @@ class InMemoryFirestoreBackend:
         self.widget_keys: dict[tuple[str, str], dict[str, Any]] = {}
         self.config_meta: dict[tuple[str, str], dict[str, Any]] = {}
         self.jobs: dict[tuple[str, str], dict[str, Any]] = {}
+        self.pipelines: dict[tuple[str, str], dict[str, Any]] = {}
 
     def upsert_client(self, client_id: str, data: dict[str, Any]) -> None:
         cid = safe_client_id(client_id)
@@ -95,6 +96,25 @@ class InMemoryFirestoreBackend:
         records = [
             deepcopy(doc)
             for (stored_cid, _), doc in self.jobs.items()
+            if stored_cid == cid
+        ]
+        records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return records[:limit]
+
+    def upsert_pipeline(self, client_id: str, pipeline_id: str, data: dict[str, Any]) -> None:
+        cid = safe_client_id(client_id)
+        self.pipelines[(cid, pipeline_id)] = deepcopy(data)
+
+    def get_pipeline(self, client_id: str, pipeline_id: str) -> dict[str, Any] | None:
+        cid = safe_client_id(client_id)
+        doc = self.pipelines.get((cid, pipeline_id))
+        return deepcopy(doc) if doc else None
+
+    def list_pipelines(self, client_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        cid = safe_client_id(client_id)
+        records = [
+            deepcopy(doc)
+            for (stored_cid, _), doc in self.pipelines.items()
             if stored_cid == cid
         ]
         records.sort(key=lambda item: item.get("created_at", ""), reverse=True)

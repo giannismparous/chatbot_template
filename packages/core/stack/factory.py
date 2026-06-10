@@ -27,7 +27,9 @@ from packages.core.ports.client_registry import ClientRegistryStore
 from packages.core.ports.config_meta_store import ConfigMetaStore
 from packages.core.ports.config_store import ConfigStore
 from packages.core.ports.file_store import FileStore
+from packages.adapters.pipeline.local_pipeline_store import LocalPipelineStore
 from packages.core.ports.job_store import JobStore
+from packages.core.ports.pipeline_store import PipelineStore
 from packages.core.ports.metrics_store import MetricsStore
 from packages.core.ports.session_store import SessionStore
 from packages.core.ports.trace_store import TraceStore
@@ -51,6 +53,7 @@ class Stack:
     metrics_store: MetricsStore
     session_store: SessionStore
     job_runner: Any
+    pipeline_store: PipelineStore
 
 
 def project_root() -> Path:
@@ -193,6 +196,20 @@ def build_job_runner(
     return LocalJobRunner(tenant_storage=tenant_storage)
 
 
+def build_pipeline_store(
+    profile: str,
+    tenant_storage: TenantStorage,
+    job_store: JobStore | None,
+) -> PipelineStore:
+    from packages.adapters.firestore.in_memory_stores import FirestorePipelineStore
+
+    if profile == "firebase" and firestore_control_plane_enabled() and job_store is not None:
+        backend = getattr(job_store, "_backend", None)
+        if backend is not None:
+            return FirestorePipelineStore(backend)
+    return LocalPipelineStore(tenant_storage=tenant_storage)
+
+
 def build_stack(profile: str | None = None) -> Stack:
     selected = (profile or os.getenv("STACK_PROFILE", "local")).strip() or "local"
     if selected == "enterprise":
@@ -217,6 +234,7 @@ def build_stack(profile: str | None = None) -> Stack:
     metrics_store = LocalSqliteMetricsStore(db_path)
     session_store = LocalSqliteSessionStore(db_path)
     job_runner = build_job_runner(selected, tenant_storage, job_store)
+    pipeline_store = build_pipeline_store(selected, tenant_storage, job_store)
 
     if selected == "firebase" and isinstance(file_store, GcsFileStore):
         default_client = os.getenv("DEFAULT_CLIENT_ID", "default").strip() or "default"
@@ -241,4 +259,5 @@ def build_stack(profile: str | None = None) -> Stack:
         metrics_store=metrics_store,
         session_store=session_store,
         job_runner=job_runner,
+        pipeline_store=pipeline_store,
     )

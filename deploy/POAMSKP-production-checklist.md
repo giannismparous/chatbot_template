@@ -58,6 +58,8 @@ Print this page and check off as you go. Do not write secrets on this sheet.
 
 | Deploy run | ☐ | Active index updated |
 
+| Admin full pipeline run tested | ☐ | `POST .../pipeline/run` preset `full_deploy` or admin UI |
+
 | Canonical index layout verified | ☐ | `clients/{client_id}/indexes` is source of truth; no manual rsync to `default/indexes` |
 
 | Smoke tests passed | ☐ | Health, chat, POAMSKP contact, Drive, admin |

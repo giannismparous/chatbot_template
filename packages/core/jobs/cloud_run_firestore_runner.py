@@ -3,63 +3,48 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from packages.adapters.cloudrun.jobs_dispatcher import build_cloud_run_jobs_dispatcher
 from packages.core.jobs.firestore_runner import FirestoreJobRunner
 from packages.core.jobs.models import JobRecord, JobType
 from packages.core.ports.job_store import JobStore
 
 
 class CloudRunFirestoreJobRunner(FirestoreJobRunner):
-    """Firestore job metadata + optional Cloud Run Jobs trigger."""
+    """Firestore job metadata + Cloud Run Jobs API dispatch (ADC)."""
 
     def __init__(self, *, job_store: JobStore) -> None:
         super().__init__(job_store=job_store)
-        self._region = os.getenv("CLOUD_RUN_REGION", "europe-west1").strip()
-        self._project = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
-        self._job_prefix = os.getenv("CLOUD_RUN_JOB_PREFIX", "chatbot").strip()
+        self._dispatcher = build_cloud_run_jobs_dispatcher()
 
-    def _job_name(self, job_type: JobType) -> str:
-        return f"{self._job_prefix}-{job_type.value.replace('_', '-')}"
-
-    def _trigger_cloud_run(self, *, job_type: JobType, client_id: str, job_id: str) -> None:
-        if not self._project:
-            return
-        if os.getenv("CLOUD_RUN_JOBS_USE_GCLOUD", "").strip().lower() not in {"1", "true", "yes", "on"}:
-            return
-        import subprocess
-
-        subprocess.run(
-            [
-                "gcloud",
-                "run",
-                "jobs",
-                "execute",
-                self._job_name(job_type),
-                f"--region={self._region}",
-                f"--project={self._project}",
-                "--quiet",
-                f"--update-env-vars=JOB_TYPE={job_type.value},CLIENT_ID={client_id},JOB_ID={job_id}",
-            ],
-            check=True,
-        )
+    def _trigger_cloud_run(self, *, job_type: JobType, client_id: str, job_id: str) -> str | None:
+        if self._dispatcher is None:
+            return None
+        return self._dispatcher.dispatch(job_type=job_type, client_id=client_id, job_id=job_id)
 
     def submit(self, *, client_id: str, job_type: JobType, runner) -> JobRecord:
-        use_gcloud = os.getenv("CLOUD_RUN_JOBS_USE_GCLOUD", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
         disabled = os.getenv("CLOUD_RUN_JOBS_DISABLED", "").strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
         }
-        if disabled or not use_gcloud:
+        if disabled or self._dispatcher is None:
             return super().submit(client_id=client_id, job_type=job_type, runner=runner)
+
         record = super().submit(client_id=client_id, job_type=job_type, runner=lambda: {})
         try:
-            self._trigger_cloud_run(job_type=job_type, client_id=client_id, job_id=record.job_id)
+            execution = self._trigger_cloud_run(job_type=job_type, client_id=client_id, job_id=record.job_id)
+            if execution:
+                updated = JobRecord(
+                    job_id=record.job_id,
+                    client_id=record.client_id,
+                    job_type=record.job_type,
+                    status=record.status,
+                    created_at=record.created_at,
+                    updated_at=record.updated_at,
+                    result={**record.result, "cloud_run_execution": execution},
+                )
+                self.update_job(updated)
         except Exception:
             if self._sync_mode():
                 raise

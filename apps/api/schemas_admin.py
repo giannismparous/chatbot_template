@@ -275,3 +275,53 @@ class DriveSourceCreateRequest(BaseModel):
 
 class DriveSyncJobRequest(BaseModel):
     source_ids: Optional[list[str]] = None
+
+
+class PipelineRunRequest(BaseModel):
+    preset: Optional[str] = None
+    steps: Optional[list[str]] = None
+    eval_llm_mode: str = "live"
+    eval_suite: str = "full"
+    force_empty_deploy: bool = False
+    drive_source_ids: Optional[list[str]] = None
+
+
+class PipelineStepResultDTO(BaseModel):
+    step: str
+    status: str
+    job_id: Optional[str] = None
+    cloud_run_execution: Optional[str] = None
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None
+
+
+class PipelineRunAcceptedDTO(BaseModel):
+    pipeline_id: str
+    client_id: str
+    status: str
+    preset: Optional[str] = None
+    steps: list[str] = Field(default_factory=list)
+
+
+class PipelineRunDTO(BaseModel):
+    pipeline_id: str
+    client_id: str
+    status: str
+    preset: Optional[str] = None
+    steps: list[str] = Field(default_factory=list)
+    current_step: Optional[str] = None
+    created_at: str
+    updated_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    active_version_before: Optional[str] = None
+    pending_version_after_ingest: Optional[str] = None
+    active_version_after_deploy: Optional[str] = None
+    step_results: list[PipelineStepResultDTO] = Field(default_factory=list)
+    ingest_summary: dict[str, Any] = Field(default_factory=dict)
+    eval_summary: dict[str, Any] = Field(default_factory=dict)
+    index_manifest: dict[str, Any] = Field(default_factory=dict)
+    force_empty_deploy: bool = False
+    eval_llm_mode: str = "live"
+    error: Optional[str] = None
+    runtime_refresh_note: Optional[str] = None
