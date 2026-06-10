@@ -113,6 +113,12 @@ def cmd_activate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pipeline(args: argparse.Namespace) -> int:
+    from apps.worker.jobs.run_pipeline import run_pipeline
+
+    return run_pipeline(client_id=args.client_id, pipeline_id=args.pipeline_id)
+
+
 def cmd_rollback(args: argparse.Namespace) -> int:
     root = _clients_root()
     try:
@@ -155,6 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_deploy = job_sub.add_parser("deploy")
     p_deploy.add_argument("--client-id", required=True)
     p_deploy.set_defaults(handler=cmd_deploy)
+
+    p_pipeline = job_sub.add_parser("pipeline")
+    p_pipeline.add_argument("--client-id", required=True)
+    p_pipeline.add_argument("--pipeline-id", required=True)
+    p_pipeline.set_defaults(handler=cmd_pipeline)
 
     p_activate = job_sub.add_parser("activate")
     p_activate.add_argument("--client-id", required=True)

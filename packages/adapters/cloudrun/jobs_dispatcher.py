@@ -21,6 +21,7 @@ _JOB_TYPE_CLI: dict[JobType, str] = {
     JobType.INGEST: "ingest",
     JobType.EVAL: "eval",
     JobType.DEPLOY: "deploy",
+    JobType.PIPELINE: "pipeline",
 }
 
 
@@ -167,6 +168,23 @@ class CloudRunJobsDispatcher:
                 return condition.get("state") == "CONDITION_SUCCEEDED"
         return bool(execution.get("completionTime")) and not execution.get("error")
 
+    @staticmethod
+    def execution_failure_detail(execution: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for condition in execution.get("conditions") or []:
+            if not isinstance(condition, dict):
+                continue
+            if condition.get("type") == "Completed" and condition.get("state") == "CONDITION_FAILED":
+                message = condition.get("message")
+                if message:
+                    parts.append(str(message))
+        if execution.get("error"):
+            parts.append(str(execution["error"]))
+        log_uri = execution.get("logUri") or execution.get("log_uri")
+        if log_uri:
+            parts.append(f"log={log_uri}")
+        return "; ".join(parts) if parts else "Cloud Run job execution failed."
+
     def wait_for_execution(
         self,
         execution_name: str,
@@ -206,6 +224,92 @@ class CloudRunJobsDispatcher:
             eval_llm_mode=eval_llm_mode,
             eval_suite=eval_suite,
         )
+
+    def dispatch_pipeline(self, *, client_id: str, pipeline_id: str) -> str:
+        use_gcloud = os.getenv("CLOUD_RUN_JOBS_USE_GCLOUD", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if use_gcloud:
+            job_name = self.job_name(JobType.PIPELINE)
+            args = [
+                "gcloud",
+                "run",
+                "jobs",
+                "execute",
+                job_name,
+                f"--region={self._region}",
+                f"--project={self._project}",
+                "--quiet",
+                (
+                    "--args=job,pipeline,--client-id,"
+                    f"{client_id},--pipeline-id,{pipeline_id}"
+                ),
+            ]
+            subprocess.run(args, check=True)
+            return f"gcloud:{job_name}"
+        return self._run_pipeline_via_api(client_id=client_id, pipeline_id=pipeline_id)
+
+    def _run_pipeline_via_api(self, *, client_id: str, pipeline_id: str) -> str:
+        job_name = self.job_name(JobType.PIPELINE)
+        url = (
+            f"https://run.googleapis.com/v2/projects/{self._project}/locations/"
+            f"{self._region}/jobs/{job_name}:run"
+        )
+        container_args = [
+            "job",
+            "pipeline",
+            "--client-id",
+            client_id,
+            "--pipeline-id",
+            pipeline_id,
+        ]
+        body: dict[str, Any] = {
+            "overrides": {
+                "containerOverrides": [
+                    {
+                        "args": container_args,
+                        "env": [
+                            {"name": "CLIENT_ID", "value": client_id},
+                            {"name": "PIPELINE_ID", "value": pipeline_id},
+                        ],
+                    }
+                ]
+            }
+        }
+        payload = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=payload,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._auth_token()}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Cloud Run pipeline dispatch failed for {job_name}: HTTP {exc.code} {detail}"
+            ) from exc
+        execution_name = str(data.get("name") or "")
+        if not execution_name:
+            raise RuntimeError(
+                f"Cloud Run pipeline dispatch returned no execution name for {job_name}"
+            )
+        logger.info(
+            "Dispatched Cloud Run pipeline job=%s client=%s pipeline_id=%s execution=%s",
+            job_name,
+            client_id,
+            pipeline_id,
+            execution_name,
+        )
+        return execution_name
 
 
 def build_cloud_run_jobs_dispatcher() -> CloudRunJobsDispatcher | None:

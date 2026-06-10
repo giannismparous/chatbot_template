@@ -295,12 +295,17 @@ class PipelineStepResultDTO(BaseModel):
     error: Optional[str] = None
 
 
+class PipelineMarkFailedRequest(BaseModel):
+    reason: str = "Manually marked failed by admin."
+
+
 class PipelineRunAcceptedDTO(BaseModel):
     pipeline_id: str
     client_id: str
     status: str
     preset: Optional[str] = None
     steps: list[str] = Field(default_factory=list)
+    runner_execution: Optional[str] = None
 
 
 class PipelineRunDTO(BaseModel):
@@ -323,5 +328,7 @@ class PipelineRunDTO(BaseModel):
     index_manifest: dict[str, Any] = Field(default_factory=dict)
     force_empty_deploy: bool = False
     eval_llm_mode: str = "live"
+    eval_suite: str = "full"
+    runner_execution: Optional[str] = None
     error: Optional[str] = None
     runtime_refresh_note: Optional[str] = None

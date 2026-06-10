@@ -18,6 +18,8 @@ Use after deploying API + worker images that include Phase 21A pipeline automati
 - [ ] `ADMIN_JOBS_SYNC` **not** set on API (must be unset/false)
 - [ ] Firestore control plane enabled (`FIRESTORE_CONTROL_PLANE=true`)
 - [ ] API SA has `roles/run.developer`, `roles/datastore.user`, `roles/storage.objectAdmin`, `roles/secretmanager.secretAccessor`
+- [ ] `chatbot-pipeline` Cloud Run job exists and uses latest worker image
+- [ ] Worker SA can run child jobs (`chatbot-drive-sync`, `chatbot-ingest`, `chatbot-eval`, `chatbot-deploy`) and write Firestore/GCS
 
 ---
 
@@ -45,16 +47,53 @@ gcloud run deploy simasia-chatbot-api \
   --memory=2Gi --cpu=2 --timeout=300 --min-instances=0
 ```
 
-**Note:** `POST /pipeline/run` returns **202 immediately**; orchestration runs in a background thread on the API instance. Poll status — do not wait on the POST response.
+**Note:** `POST /pipeline/run` returns **202 immediately** after creating the Firestore record and dispatching the durable `chatbot-pipeline` Cloud Run job. Poll status — do not wait on the POST response.
 
 ---
 
-## 2. Verify worker jobs use latest image
+## 2. Create/update worker jobs (including chatbot-pipeline)
+
+```bash
+export WORKER_IMAGE=gcr.io/${PROJECT_ID}/simasia-chatbot-worker:phase21a
+export WORKER_SA=chatbot-worker@${PROJECT_ID}.iam.gserviceaccount.com
+
+gcloud builds submit --project=${PROJECT_ID} \
+  --tag ${WORKER_IMAGE} \
+  --dockerfile=deploy/Dockerfile.worker .
+
+# Child step jobs (unchanged entrypoints)
+for JOB in chatbot-pipeline chatbot-drive-sync chatbot-ingest chatbot-eval chatbot-deploy; do
+  gcloud run jobs update ${JOB} \
+    --project=${PROJECT_ID} \
+    --region=${REGION} \
+    --image=${WORKER_IMAGE}
+done
+
+# Durable pipeline runner (new)
+gcloud run jobs describe chatbot-pipeline --region=${REGION} --project=${PROJECT_ID} >/dev/null 2>&1 \
+  && ACTION=update || ACTION=create
+
+gcloud run jobs ${ACTION} chatbot-pipeline \
+  --project=${PROJECT_ID} \
+  --region=${REGION} \
+  --image=${WORKER_IMAGE} \
+  --service-account=${WORKER_SA} \
+  --command=python \
+  --args=-m,apps.worker.cli,job,pipeline \
+  --memory=2Gi --cpu=2 --task-timeout=7200 --max-retries=0 \
+  --set-env-vars=STACK_PROFILE=firebase,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_BUCKET=${BUCKET},CLOUD_RUN_REGION=${REGION},FIRESTORE_CONTROL_PLANE=true,GCS_REGISTRY_FALLBACK=false,CLOUD_RUN_JOBS_DISABLED=false,CLOUD_RUN_JOBS_USE_GCLOUD=false,CLOUD_RUN_JOB_PREFIX=chatbot
+```
+
+`chatbot-pipeline` receives `--client-id` and `--pipeline-id` overrides per execution from the API dispatch.
+
+---
+
+## 3. Verify worker jobs use latest image
 
 ```bash
 export WORKER_IMAGE=gcr.io/${PROJECT_ID}/simasia-chatbot-worker:phase21a
 
-for JOB in chatbot-drive-sync chatbot-ingest chatbot-eval chatbot-deploy; do
+for JOB in chatbot-pipeline chatbot-drive-sync chatbot-ingest chatbot-eval chatbot-deploy; do
   gcloud run jobs describe ${JOB} --region=${REGION} --project=${PROJECT_ID} \
     --format='value(template.template.containers[0].image)'
 done
@@ -63,7 +102,7 @@ done
 If any job shows an old digest/tag, update:
 
 ```bash
-for JOB in chatbot-drive-sync chatbot-ingest chatbot-eval chatbot-deploy; do
+for JOB in chatbot-pipeline chatbot-drive-sync chatbot-ingest chatbot-eval chatbot-deploy; do
   gcloud run jobs update ${JOB} \
     --project=${PROJECT_ID} \
     --region=${REGION} \
@@ -75,7 +114,7 @@ Jobs should use entrypoint `python -m apps.worker.cli job <step> --client-id def
 
 ---
 
-## 3. IAM (run once if not already granted)
+## 4. IAM (run once if not already granted)
 
 ```bash
 export PROJECT_ID=simasia-ai-chatbot-production
@@ -92,11 +131,22 @@ for ROLE in \
 done
 ```
 
-`roles/run.developer` covers Cloud Run Jobs API `jobs:run` + execution read. Pipeline status writes use Firestore (`roles/datastore.user`).
+`roles/run.developer` on API SA covers dispatching `chatbot-pipeline`. Pipeline orchestration and status writes run inside the worker job (Firestore + child job dispatch).
+
+Grant worker SA the same runtime roles if not already:
+
+```bash
+export WORKER_SA=chatbot-worker@${PROJECT_ID}.iam.gserviceaccount.com
+for ROLE in roles/run.developer roles/datastore.user roles/storage.objectAdmin roles/secretmanager.secretAccessor; do
+  gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+    --member="serviceAccount:${WORKER_SA}" \
+    --role="${ROLE}"
+done
+```
 
 ---
 
-## 4. Pipeline smoke — ingest_eval
+## 5. Pipeline smoke — ingest_eval
 
 ```bash
 export API_URL=$(gcloud run services describe simasia-chatbot-api \
@@ -125,7 +175,7 @@ watch -n 10 "curl -s ${API_URL}/v1/admin/clients/default/pipeline/status/${PIPEL
 
 ---
 
-## 5. Pipeline smoke — full_deploy (when eval already passed)
+## 6. Pipeline smoke — full_deploy (when eval already passed)
 
 ```bash
 curl -s -X POST "${API_URL}/v1/admin/clients/default/pipeline/run" \
@@ -146,7 +196,22 @@ export PIPELINE_ID=$(python3 -c "import json; print(json.load(open('/tmp/pipelin
 
 ---
 
-## 6. Restart API after deploy
+## 7. Mark stale stuck pipelines (optional cleanup)
+
+If pre-fix pipelines are stuck at `running` with empty `step_results`:
+
+```bash
+curl -s -X POST "${API_URL}/v1/admin/clients/default/pipeline/status/pipe_4e263452d0bb/mark-failed" \
+  -H "x-admin-token: ${ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"Stale run from pre-21A-fix background thread."}'
+```
+
+Repeat for `pipe_65326a5de7f4` and `pipe_a1f6738b9065`.
+
+---
+
+## 8. Restart API after deploy
 
 ```bash
 gcloud run services update simasia-chatbot-api \
@@ -164,7 +229,7 @@ Check startup logs for:
 
 ---
 
-## 7. Chat smoke
+## 9. Chat smoke
 
 ```bash
 export WIDGET_KEY='wk_...'
@@ -188,7 +253,7 @@ curl -s -X POST "${API_URL}/v2/chat/respond" \
 
 ---
 
-## 8. Admin UI
+## 10. Admin UI
 
 Open react-widget admin dashboard → **Pipeline automation**:
 
@@ -200,7 +265,7 @@ Open react-widget admin dashboard → **Pipeline automation**:
 
 ---
 
-## 9. Manual fallback (unchanged)
+## 11. Manual fallback (unchanged)
 
 ```bash
 gcloud run jobs execute chatbot-drive-sync --region=${REGION} --project=${PROJECT_ID} --wait

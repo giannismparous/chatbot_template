@@ -11,6 +11,7 @@ class PipelineStatus(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    STALE = "stale"
 
 
 class PipelineStep(str, Enum):
@@ -99,6 +100,9 @@ class PipelineRunRecord:
     index_manifest: dict[str, Any] = field(default_factory=dict)
     force_empty_deploy: bool = False
     eval_llm_mode: str = "live"
+    eval_suite: str = "full"
+    drive_source_ids: list[str] | None = None
+    runner_execution: str | None = None
     error: str | None = None
     runtime_refresh_note: str | None = None
 
@@ -123,6 +127,9 @@ class PipelineRunRecord:
             "index_manifest": self.index_manifest,
             "force_empty_deploy": self.force_empty_deploy,
             "eval_llm_mode": self.eval_llm_mode,
+            "eval_suite": self.eval_suite,
+            "drive_source_ids": self.drive_source_ids,
+            "runner_execution": self.runner_execution,
             "error": self.error,
             "runtime_refresh_note": self.runtime_refresh_note,
         }
@@ -158,6 +165,9 @@ class PipelineRunRecord:
             index_manifest=dict(data.get("index_manifest") or {}),
             force_empty_deploy=bool(data.get("force_empty_deploy")),
             eval_llm_mode=str(data.get("eval_llm_mode") or "live"),
+            eval_suite=str(data.get("eval_suite") or "full"),
+            drive_source_ids=list(data.get("drive_source_ids") or []) or None,
+            runner_execution=data.get("runner_execution"),
             error=data.get("error"),
             runtime_refresh_note=data.get("runtime_refresh_note"),
         )

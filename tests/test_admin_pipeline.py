@@ -223,11 +223,33 @@ def test_pipeline_failure_stops_later_steps(pipeline_env, monkeypatch: pytest.Mo
     assert not any(step["step"] == "ingest" for step in body["step_results"])
 
 
-def test_pipeline_start_returns_pending_without_sync_mode(
+def test_pipeline_start_dispatches_durable_runner_without_sync_mode(
     pipeline_env,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from unittest.mock import MagicMock
+
     monkeypatch.delenv("ADMIN_JOBS_SYNC", raising=False)
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "demo")
+    monkeypatch.setenv("CLOUD_RUN_JOBS_DISABLED", "false")
+
+    from apps.api.routes import admin_client_pipeline
+
+    mock_orch = MagicMock()
+    mock_record = MagicMock()
+    mock_record.pipeline_id = "pipe_test123456"
+    mock_record.client_id = "tenant_a"
+    mock_record.status = type(
+        "S",
+        (),
+        {"value": "running"},
+    )()
+    mock_record.preset = "sync_only"
+    mock_record.steps = ["drive-sync"]
+    mock_record.runner_execution = "projects/demo/executions/exec-1"
+    mock_orch.start.return_value = mock_record
+    monkeypatch.setattr(admin_client_pipeline, "get_pipeline_orchestrator", lambda: mock_orch)
+
     client = pipeline_env["client"]
     res = client.post(
         "/v1/admin/clients/tenant_a/pipeline/run",
@@ -236,8 +258,57 @@ def test_pipeline_start_returns_pending_without_sync_mode(
     )
     assert res.status_code == 202
     body = res.json()
-    assert body["status"] == "pending"
     assert body["pipeline_id"].startswith("pipe_")
+    mock_orch.start.assert_called_once()
+
+
+def test_pipeline_mark_failed_endpoint(pipeline_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    from apps.api.routes import admin_client_pipeline
+
+    mock_record = MagicMock()
+    mock_record.pipeline_id = "pipe_fail123456"
+    mock_record.client_id = "tenant_a"
+    mock_record.status = type("S", (), {"value": "failed"})()
+    mock_record.preset = "sync_only"
+    mock_record.steps = ["drive-sync"]
+    mock_record.current_step = None
+    mock_record.created_at = mock_record.updated_at = mock_record.finished_at = __import__(
+        "datetime"
+    ).datetime.now(__import__("datetime").timezone.utc)
+    mock_record.started_at = None
+    mock_record.active_version_before = None
+    mock_record.pending_version_after_ingest = None
+    mock_record.active_version_after_deploy = None
+    mock_record.step_results = []
+    mock_record.ingest_summary = {}
+    mock_record.eval_summary = {}
+    mock_record.index_manifest = {}
+    mock_record.force_empty_deploy = False
+    mock_record.eval_llm_mode = "live"
+    mock_record.eval_suite = "full"
+    mock_record.runner_execution = None
+    mock_record.error = "Reset stuck production run."
+    mock_record.runtime_refresh_note = None
+
+    mock_orch = MagicMock()
+    mock_orch.mark_failed.return_value = mock_record
+    monkeypatch.setattr(admin_client_pipeline, "get_pipeline_orchestrator", lambda: mock_orch)
+
+    client = pipeline_env["client"]
+    res = client.post(
+        "/v1/admin/clients/tenant_a/pipeline/status/pipe_fail123456/mark-failed",
+        json={"reason": "Reset stuck production run."},
+        headers=ADMIN_HEADERS,
+    )
+    assert res.status_code == 200
+    assert res.json()["status"] == "failed"
+    mock_orch.mark_failed.assert_called_once_with(
+        "tenant_a",
+        "pipe_fail123456",
+        reason="Reset stuck production run.",
+    )
 
 
 def test_pipeline_list_runs(pipeline_env) -> None:

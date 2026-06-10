@@ -13,6 +13,20 @@ def test_execution_succeeded_reads_completed_condition() -> None:
     assert dispatcher.execution_succeeded(execution) is True
 
 
+def test_execution_failure_detail_includes_message_and_log() -> None:
+    dispatcher = CloudRunJobsDispatcher(project="demo", region="europe-west1")
+    detail = dispatcher.execution_failure_detail(
+        {
+            "conditions": [
+                {"type": "Completed", "state": "CONDITION_FAILED", "message": "container failed"},
+            ],
+            "logUri": "https://console.cloud.google.com/logs/viewer",
+        }
+    )
+    assert "container failed" in detail
+    assert "log=" in detail
+
+
 def test_execution_failed_reads_completed_condition() -> None:
     dispatcher = CloudRunJobsDispatcher(project="demo", region="europe-west1")
     execution = {

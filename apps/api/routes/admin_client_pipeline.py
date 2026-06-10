@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from apps.api.dependencies.auth import require_admin_token
 from apps.api.dependencies.pipeline_services import get_pipeline_orchestrator
 from apps.api.schemas_admin import (
+    PipelineMarkFailedRequest,
     PipelineRunAcceptedDTO,
     PipelineRunDTO,
     PipelineRunRequest,
@@ -52,6 +53,8 @@ def _pipeline_dto(record: PipelineRunRecord) -> PipelineRunDTO:
         index_manifest=record.index_manifest,
         force_empty_deploy=record.force_empty_deploy,
         eval_llm_mode=record.eval_llm_mode,
+        eval_suite=record.eval_suite,
+        runner_execution=record.runner_execution,
         error=record.error,
         runtime_refresh_note=record.runtime_refresh_note,
     )
@@ -84,6 +87,7 @@ def run_client_pipeline(
         status=record.status.value,
         preset=record.preset,
         steps=record.steps,
+        runner_execution=record.runner_execution,
     )
 
 
@@ -95,9 +99,29 @@ def get_pipeline_status(
 ) -> PipelineRunDTO:
     _ = admin
     cid = safe_client_id(client_id)
-    record = get_pipeline_orchestrator().get(cid, pipeline_id)
+    record = get_pipeline_orchestrator().get_resolved(cid, pipeline_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline run not found.")
+    return _pipeline_dto(record)
+
+
+@router.post(
+    "/{client_id}/pipeline/status/{pipeline_id}/mark-failed",
+    response_model=PipelineRunDTO,
+)
+def mark_pipeline_failed(
+    client_id: str,
+    pipeline_id: str,
+    payload: PipelineMarkFailedRequest,
+    admin: AdminContext = Depends(require_admin_token),
+) -> PipelineRunDTO:
+    _ = admin
+    cid = safe_client_id(client_id)
+    orchestrator = get_pipeline_orchestrator()
+    try:
+        record = orchestrator.mark_failed(cid, pipeline_id, reason=payload.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return _pipeline_dto(record)
 
 

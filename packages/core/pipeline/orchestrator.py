@@ -28,6 +28,7 @@ from packages.core.stack.factory import project_root
 from packages.core.tenant.paths import safe_client_id
 
 from packages.adapters.cloudrun.jobs_dispatcher import CloudRunJobsDispatcher
+from packages.core.pipeline.stale import is_pipeline_stale, mark_pipeline_stale
 
 
 class PipelineOrchestrator:
@@ -59,6 +60,9 @@ class PipelineOrchestrator:
         }
         return not disabled and self._jobs_dispatcher is not None
 
+    def _durable_runner_enabled(self) -> bool:
+        return self._cloud_run_dispatch_enabled()
+
     def start(
         self,
         *,
@@ -88,34 +92,97 @@ class PipelineOrchestrator:
             index_manifest=manifest.to_dict(),
             force_empty_deploy=force_empty_deploy,
             eval_llm_mode=eval_llm_mode,
+            eval_suite=eval_suite,
+            drive_source_ids=drive_source_ids,
         )
         self._pipeline_store.create(record)
 
-        def _run() -> None:
-            self._execute(
-                record=pipeline_id,
-                client_id=cid,
-                steps=resolved_steps,
-                eval_llm_mode=eval_llm_mode,
-                eval_suite=eval_suite,
-                force_empty_deploy=force_empty_deploy,
-                drive_source_ids=drive_source_ids,
-            )
-
         if self._sync_mode():
-            _run()
+            self.execute_pipeline(client_id=cid, pipeline_id=pipeline_id)
             final = self._pipeline_store.get(cid, pipeline_id)
             assert final is not None
             return final
 
-        self._executor.submit(_run)
+        if self._durable_runner_enabled():
+            self._dispatch_pipeline_runner(record)
+            return record
+
+        self._executor.submit(
+            lambda: self.execute_pipeline(client_id=cid, pipeline_id=pipeline_id)
+        )
         return record
+
+    def _dispatch_pipeline_runner(self, record: PipelineRunRecord) -> None:
+        assert self._jobs_dispatcher is not None
+        execution = self._jobs_dispatcher.dispatch_pipeline(
+            client_id=record.client_id,
+            pipeline_id=record.pipeline_id,
+        )
+        record.runner_execution = execution
+        record.status = PipelineStatus.RUNNING
+        record.started_at = utc_now()
+        self._save(record)
+
+    def execute_pipeline(self, *, client_id: str, pipeline_id: str) -> PipelineRunRecord:
+        current = self._pipeline_store.get(client_id, pipeline_id)
+        if current is None:
+            raise ValueError(f"Pipeline run not found: {pipeline_id}")
+        resolved_steps = [PipelineStep(step) for step in current.steps]
+        self._execute(
+            record=pipeline_id,
+            client_id=client_id,
+            steps=resolved_steps,
+            eval_llm_mode=current.eval_llm_mode,
+            eval_suite=current.eval_suite,
+            force_empty_deploy=current.force_empty_deploy,
+            drive_source_ids=current.drive_source_ids,
+        )
+        final = self._pipeline_store.get(client_id, pipeline_id)
+        assert final is not None
+        return final
 
     def get(self, client_id: str, pipeline_id: str) -> PipelineRunRecord | None:
         return self._pipeline_store.get(client_id, pipeline_id)
 
+    def get_resolved(self, client_id: str, pipeline_id: str) -> PipelineRunRecord | None:
+        record = self._pipeline_store.get(client_id, pipeline_id)
+        if record is None:
+            return None
+        if is_pipeline_stale(record):
+            record = mark_pipeline_stale(record)
+            self._save(record)
+        return record
+
+    def mark_failed(
+        self,
+        client_id: str,
+        pipeline_id: str,
+        *,
+        reason: str,
+    ) -> PipelineRunRecord:
+        record = self._pipeline_store.get(client_id, pipeline_id)
+        if record is None:
+            raise ValueError(f"Pipeline run not found: {pipeline_id}")
+        if record.status not in {PipelineStatus.PENDING, PipelineStatus.RUNNING, PipelineStatus.STALE}:
+            raise ValueError(
+                f"Cannot mark pipeline failed from status={record.status.value!r}."
+            )
+        record.status = PipelineStatus.FAILED
+        record.error = reason
+        record.finished_at = utc_now()
+        record.current_step = None
+        self._save(record)
+        return record
+
     def list_runs(self, client_id: str, *, limit: int = 20) -> list[PipelineRunRecord]:
-        return self._pipeline_store.list_runs(client_id, limit=limit)
+        records = self._pipeline_store.list_runs(client_id, limit=limit)
+        resolved: list[PipelineRunRecord] = []
+        for record in records:
+            if is_pipeline_stale(record):
+                record = mark_pipeline_stale(record)
+                self._save(record)
+            resolved.append(record)
+        return resolved
 
     def _save(self, record: PipelineRunRecord) -> None:
         record.updated_at = utc_now()
@@ -353,7 +420,7 @@ class PipelineOrchestrator:
                 status="failed",
                 job_id=job_id,
                 cloud_run_execution=execution,
-                error="Cloud Run job execution failed.",
+                error=self._jobs_dispatcher.execution_failure_detail(final_execution),
             )
 
         self._hydrate_after_cloud_step(client_id=client_id, step=step)
@@ -504,7 +571,7 @@ class PipelineOrchestrator:
                     status="failed",
                     job_id=job_id,
                     cloud_run_execution=execution,
-                    error="Cloud Run deploy job execution failed.",
+                    error=self._jobs_dispatcher.execution_failure_detail(final_execution),
                 )
             self._hydrate_after_cloud_step(client_id=client_id, step=PipelineStep.DEPLOY)
             manifest = read_active_manifest(active_manifest_path(self._clients_root, client_id))
