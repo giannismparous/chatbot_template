@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from packages.adapters.cloudrun.jobs_dispatcher import CloudRunJobsDispatcher
+from packages.adapters.cloudrun.jobs_dispatcher import CloudRunJobsDispatcher, ExecutionOutcome
 from packages.adapters.pipeline.local_pipeline_store import LocalPipelineStore
 from packages.core.ingestion.manifest import read_active_manifest
 from packages.core.ingestion.paths import active_manifest_path
@@ -72,19 +72,52 @@ def pipeline_orchestrator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _write_eval_suite(clients_root, "tenant_a")
 
     store = LocalPipelineStore(tenant_storage=TenantStorage.local(clients_root))
+    from packages.adapters.cloudrun.jobs_dispatcher import DispatchResult, ExecutionOutcome
+
     dispatcher = MagicMock(spec=CloudRunJobsDispatcher)
-    dispatcher.dispatch_pipeline.return_value = (
-        "projects/demo/locations/europe-west1/jobs/chatbot-pipeline/executions/exec-1"
+    dispatcher.region = "europe-west1"
+    dispatcher.job_name.side_effect = lambda jt: f"chatbot-{jt.value.replace('_', '-')}"
+    pipeline_dispatch = DispatchResult(
+        job_type=JobType.PIPELINE,
+        job_name="chatbot-pipeline",
+        region="europe-west1",
+        client_id="tenant_a",
+        execution_name="projects/demo/locations/europe-west1/jobs/chatbot-pipeline/executions/exec-1",
     )
-    dispatcher.dispatch.return_value = (
-        "projects/demo/locations/europe-west1/jobs/chatbot-ingest/executions/exec-child"
-    )
-    dispatcher.wait_for_execution.return_value = {
+    def _child_dispatch(**kwargs):
+        job_type = kwargs["job_type"]
+        slug = job_type.value.replace("_", "-")
+        return DispatchResult(
+            job_type=job_type,
+            job_name=f"chatbot-{slug}",
+            region="europe-west1",
+            client_id=kwargs.get("client_id", "tenant_a"),
+            operation_name=f"projects/demo/locations/europe-west1/operations/op-{slug}",
+            execution_name=(
+                f"projects/demo/locations/europe-west1/jobs/chatbot-{slug}/executions/exec-child"
+            ),
+        )
+
+    child_dispatch = _child_dispatch(job_type=JobType.INGEST, client_id="tenant_a", job_id="x")
+    dispatcher.dispatch_pipeline_with_meta.return_value = pipeline_dispatch
+    dispatcher.dispatch_with_meta.side_effect = _child_dispatch
+    terminal_execution = {
+        "name": child_dispatch.execution_name,
         "completionTime": "2026-06-09T12:00:00Z",
-        "conditions": [{"type": "Completed", "state": "CONDITION_SUCCEEDED"}],
+        "completionStatus": "EXECUTION_SUCCEEDED",
+        "succeededCount": 1,
+        "taskCount": 1,
+        "logUri": "https://logs.example/ingest",
     }
+    dispatcher.wait_for_execution.return_value = terminal_execution
+    dispatcher.execution_outcome.return_value = ExecutionOutcome.SUCCEEDED
     dispatcher.execution_succeeded.return_value = True
     dispatcher.execution_failure_detail.return_value = "child job failed"
+    dispatcher.execution_meta.return_value = {
+        "execution_name": child_dispatch.execution_name,
+        "outcome": "succeeded",
+        "log_uri": "https://logs.example/ingest",
+    }
 
     monkeypatch.setenv("CLOUD_RUN_JOBS_DISABLED", "false")
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "demo")
@@ -111,7 +144,7 @@ def test_start_dispatches_pipeline_runner_not_background_thread(pipeline_orchest
 
     assert record.status == PipelineStatus.RUNNING
     assert record.runner_execution.endswith("executions/exec-1")
-    dispatcher.dispatch_pipeline.assert_called_once_with(
+    dispatcher.dispatch_pipeline_with_meta.assert_called_once_with(
         client_id="tenant_a",
         pipeline_id=record.pipeline_id,
     )
@@ -161,6 +194,7 @@ def test_execute_pipeline_ingest_eval_updates_step_results(
 def test_child_job_failure_records_pipeline_failure(pipeline_orchestrator) -> None:
     orchestrator = pipeline_orchestrator["orchestrator"]
     dispatcher = pipeline_orchestrator["dispatcher"]
+    dispatcher.execution_outcome.return_value = ExecutionOutcome.FAILED
     dispatcher.execution_succeeded.return_value = False
     dispatcher.execution_failure_detail.return_value = "drive sync container exited 1; log=https://logs"
 

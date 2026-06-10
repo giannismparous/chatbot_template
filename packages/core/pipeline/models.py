@@ -56,6 +56,7 @@ class PipelineStepResult:
     cloud_run_execution: str | None = None
     result: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    execution_meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +66,7 @@ class PipelineStepResult:
             "cloud_run_execution": self.cloud_run_execution,
             "result": self.result,
             "error": self.error,
+            "execution_meta": self.execution_meta,
         }
 
     @classmethod
@@ -76,6 +78,7 @@ class PipelineStepResult:
             cloud_run_execution=data.get("cloud_run_execution"),
             result=dict(data.get("result") or {}),
             error=data.get("error"),
+            execution_meta=dict(data.get("execution_meta") or {}),
         )
 
 

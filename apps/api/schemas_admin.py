@@ -293,6 +293,7 @@ class PipelineStepResultDTO(BaseModel):
     cloud_run_execution: Optional[str] = None
     result: dict[str, Any] = Field(default_factory=dict)
     error: Optional[str] = None
+    execution_meta: dict[str, Any] = Field(default_factory=dict)
 
 
 class PipelineMarkFailedRequest(BaseModel):

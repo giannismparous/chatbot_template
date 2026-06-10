@@ -27,8 +27,14 @@ from packages.core.ports.pipeline_store import PipelineStore
 from packages.core.stack.factory import project_root
 from packages.core.tenant.paths import safe_client_id
 
-from packages.adapters.cloudrun.jobs_dispatcher import CloudRunJobsDispatcher
+from packages.adapters.cloudrun.jobs_dispatcher import (
+    CloudRunJobsDispatcher,
+    DispatchResult,
+    ExecutionOutcome,
+)
+from packages.core.pipeline.logging_util import pipeline_log
 from packages.core.pipeline.stale import is_pipeline_stale, mark_pipeline_stale
+from packages.core.pipeline.timeouts import step_timeout_seconds
 
 
 class PipelineOrchestrator:
@@ -114,19 +120,27 @@ class PipelineOrchestrator:
 
     def _dispatch_pipeline_runner(self, record: PipelineRunRecord) -> None:
         assert self._jobs_dispatcher is not None
-        execution = self._jobs_dispatcher.dispatch_pipeline(
+        dispatch = self._jobs_dispatcher.dispatch_pipeline_with_meta(
             client_id=record.client_id,
             pipeline_id=record.pipeline_id,
         )
-        record.runner_execution = execution
+        record.runner_execution = dispatch.execution_name
         record.status = PipelineStatus.RUNNING
         record.started_at = utc_now()
         self._save(record)
+        pipeline_log(
+            f"dispatched pipeline runner client={record.client_id} pipeline_id={record.pipeline_id} "
+            f"operation={dispatch.operation_name} execution={dispatch.execution_name}"
+        )
 
     def execute_pipeline(self, *, client_id: str, pipeline_id: str) -> PipelineRunRecord:
         current = self._pipeline_store.get(client_id, pipeline_id)
         if current is None:
             raise ValueError(f"Pipeline run not found: {pipeline_id}")
+        pipeline_log(
+            f"execute_pipeline start client={client_id} pipeline_id={pipeline_id} "
+            f"steps={current.steps} preset={current.preset}"
+        )
         resolved_steps = [PipelineStep(step) for step in current.steps]
         self._execute(
             record=pipeline_id,
@@ -139,7 +153,16 @@ class PipelineOrchestrator:
         )
         final = self._pipeline_store.get(client_id, pipeline_id)
         assert final is not None
+        pipeline_log(
+            f"execute_pipeline finished client={client_id} pipeline_id={pipeline_id} "
+            f"status={final.status.value} steps_completed={len(final.step_results)}"
+        )
         return final
+
+    def _heartbeat(self, client_id: str, pipeline_id: str) -> None:
+        current = self._pipeline_store.get(client_id, pipeline_id)
+        if current is not None:
+            self._save(current)
 
     def get(self, client_id: str, pipeline_id: str) -> PipelineRunRecord | None:
         return self._pipeline_store.get(client_id, pipeline_id)
@@ -213,6 +236,9 @@ class PipelineOrchestrator:
                 return
             current.current_step = step.value
             self._save(current)
+            pipeline_log(
+                f"pipeline step start client={client_id} pipeline_id={pipeline_id} step={step.value}"
+            )
             try:
                 step_result = self._run_step(
                     client_id=client_id,
@@ -221,6 +247,7 @@ class PipelineOrchestrator:
                     eval_suite=eval_suite,
                     force_empty_deploy=force_empty_deploy,
                     drive_source_ids=drive_source_ids,
+                    pipeline_id=pipeline_id,
                 )
             except Exception as exc:
                 current = self._pipeline_store.get(client_id, pipeline_id)
@@ -243,6 +270,11 @@ class PipelineOrchestrator:
             self._apply_step_side_effects(current, step, step_result)
             self._refresh_manifest(current)
             self._save(current)
+            pipeline_log(
+                f"pipeline step persisted client={client_id} pipeline_id={pipeline_id} "
+                f"step={step.value} status={step_result.status} "
+                f"step_results_count={len(current.step_results)}"
+            )
 
             if step_result.status != "succeeded":
                 current.status = PipelineStatus.FAILED
@@ -314,6 +346,7 @@ class PipelineOrchestrator:
         eval_suite: str,
         force_empty_deploy: bool,
         drive_source_ids: list[str] | None,
+        pipeline_id: str | None = None,
     ) -> PipelineStepResult:
         if self._cloud_run_dispatch_enabled():
             return self._run_step_via_cloud_run(
@@ -322,6 +355,7 @@ class PipelineOrchestrator:
                 eval_llm_mode=eval_llm_mode,
                 eval_suite=eval_suite,
                 force_empty_deploy=force_empty_deploy,
+                pipeline_id=pipeline_id,
             )
         if step == PipelineStep.DEPLOY:
             return self._run_deploy_step(
@@ -374,6 +408,36 @@ class PipelineOrchestrator:
             error=final.error,
         )
 
+    def _step_result_from_execution(
+        self,
+        *,
+        step: PipelineStep,
+        job_id: str,
+        dispatch: DispatchResult,
+        execution: dict[str, Any],
+        status: str,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> PipelineStepResult:
+        meta = self._jobs_dispatcher.execution_meta(execution) if self._jobs_dispatcher else {}
+        meta.update(
+            {
+                "job_name": dispatch.job_name,
+                "region": dispatch.region,
+                "operation_name": dispatch.operation_name,
+            }
+        )
+        execution_name = str(execution.get("name") or dispatch.execution_name or "")
+        return PipelineStepResult(
+            step=step.value,
+            status=status,
+            job_id=job_id,
+            cloud_run_execution=execution_name or None,
+            result=result or {},
+            error=error,
+            execution_meta=meta,
+        )
+
     def _run_step_via_cloud_run(
         self,
         *,
@@ -382,6 +446,7 @@ class PipelineOrchestrator:
         eval_llm_mode: str,
         eval_suite: str,
         force_empty_deploy: bool,
+        pipeline_id: str | None = None,
     ) -> PipelineStepResult:
         assert self._jobs_dispatcher is not None
         if step == PipelineStep.DEPLOY:
@@ -389,6 +454,7 @@ class PipelineOrchestrator:
                 client_id=client_id,
                 force_empty_deploy=force_empty_deploy,
                 via_cloud_run=True,
+                pipeline_id=pipeline_id,
             )
 
         job_type = {
@@ -397,42 +463,77 @@ class PipelineOrchestrator:
             PipelineStep.EVAL: JobType.EVAL,
         }[step]
         job_id = f"job_{uuid.uuid4().hex[:12]}"
-        execution = self._jobs_dispatcher.dispatch(
+        timeout = float(step_timeout_seconds(step))
+        job_name = self._jobs_dispatcher.job_name(job_type)
+        pipeline_log(
+            f"dispatch child step={step.value} job={job_name} client={client_id} "
+            f"job_id={job_id} timeout={int(timeout)}s"
+        )
+        dispatch = self._jobs_dispatcher.dispatch_with_meta(
             job_type=job_type,
             client_id=client_id,
             job_id=job_id,
             eval_llm_mode=eval_llm_mode,
             eval_suite=eval_suite,
         )
+        execution_name = dispatch.execution_name or ""
+        pipeline_log(
+            f"child dispatch returned operation={dispatch.operation_name} "
+            f"execution={execution_name}"
+        )
+
+        def _on_poll(execution: dict[str, Any], outcome: ExecutionOutcome) -> None:
+            if pipeline_id is not None:
+                self._heartbeat(client_id, pipeline_id)
+            pipeline_log(
+                f"child poll step={step.value} execution={execution.get('name')} "
+                f"outcome={outcome.value}"
+            )
+
         try:
-            final_execution = self._jobs_dispatcher.wait_for_execution(execution)
+            final_execution = self._jobs_dispatcher.wait_for_execution(
+                execution_name,
+                timeout_seconds=timeout,
+                on_poll=_on_poll,
+            )
         except TimeoutError as exc:
-            return PipelineStepResult(
-                step=step.value,
-                status="failed",
+            pipeline_log(f"child step timeout step={step.value} execution={execution_name}")
+            return self._step_result_from_execution(
+                step=step,
                 job_id=job_id,
-                cloud_run_execution=execution,
+                dispatch=dispatch,
+                execution={"name": execution_name, "completionStatus": "EXECUTION_FAILED"},
+                status="failed",
                 error=str(exc),
             )
-        if not self._jobs_dispatcher.execution_succeeded(final_execution):
-            return PipelineStepResult(
-                step=step.value,
-                status="failed",
+        outcome = self._jobs_dispatcher.execution_outcome(final_execution)
+        if outcome != ExecutionOutcome.SUCCEEDED:
+            pipeline_log(
+                f"child step failed step={step.value} outcome={outcome.value} "
+                f"detail={self._jobs_dispatcher.execution_failure_detail(final_execution)}"
+            )
+            return self._step_result_from_execution(
+                step=step,
                 job_id=job_id,
-                cloud_run_execution=execution,
+                dispatch=dispatch,
+                execution=final_execution,
+                status="failed",
                 error=self._jobs_dispatcher.execution_failure_detail(final_execution),
             )
 
+        pipeline_log(f"child step succeeded step={step.value}; hydrating outputs")
         self._hydrate_after_cloud_step(client_id=client_id, step=step)
         result = self._load_step_result(client_id=client_id, step=step)
+        pipeline_log(f"child step loaded result step={step.value} keys={','.join(sorted(result.keys()))}")
         if step == PipelineStep.INGEST and not force_empty_deploy:
             chunk_count = int(result.get("chunk_count") or 0)
             if chunk_count <= 0:
-                return PipelineStepResult(
-                    step=step.value,
-                    status="failed",
+                return self._step_result_from_execution(
+                    step=step,
                     job_id=job_id,
-                    cloud_run_execution=execution,
+                    dispatch=dispatch,
+                    execution=final_execution,
+                    status="failed",
                     result=result,
                     error="Ingest produced zero chunks; deploy blocked (set force_empty_deploy to override).",
                 )
@@ -440,19 +541,21 @@ class PipelineOrchestrator:
             deploy_eligible = bool(result.get("deploy_eligible"))
             status_ok = str(result.get("status") or "") == "pass"
             if not status_ok or not deploy_eligible:
-                return PipelineStepResult(
-                    step=step.value,
-                    status="failed",
+                return self._step_result_from_execution(
+                    step=step,
                     job_id=job_id,
-                    cloud_run_execution=execution,
+                    dispatch=dispatch,
+                    execution=final_execution,
+                    status="failed",
                     result=result,
                     error="Eval did not pass or is not deploy_eligible.",
                 )
-        return PipelineStepResult(
-            step=step.value,
-            status="succeeded",
+        return self._step_result_from_execution(
+            step=step,
             job_id=job_id,
-            cloud_run_execution=execution,
+            dispatch=dispatch,
+            execution=final_execution,
+            status="succeeded",
             result=result,
         )
 
@@ -516,6 +619,7 @@ class PipelineOrchestrator:
         client_id: str,
         force_empty_deploy: bool,
         via_cloud_run: bool = False,
+        pipeline_id: str | None = None,
     ) -> PipelineStepResult:
         if via_cloud_run:
             self._hydrate_after_cloud_step(client_id=client_id, step=PipelineStep.INGEST)
@@ -550,36 +654,53 @@ class PipelineOrchestrator:
 
         if via_cloud_run and self._jobs_dispatcher is not None:
             job_id = f"job_{uuid.uuid4().hex[:12]}"
-            execution = self._jobs_dispatcher.dispatch(
+            timeout = float(step_timeout_seconds(PipelineStep.DEPLOY))
+            dispatch = self._jobs_dispatcher.dispatch_with_meta(
                 job_type=JobType.DEPLOY,
                 client_id=client_id,
                 job_id=job_id,
             )
+            execution_name = dispatch.execution_name or ""
+
+            def _on_poll(execution: dict[str, Any], outcome: ExecutionOutcome) -> None:
+                if pipeline_id is not None:
+                    self._heartbeat(client_id, pipeline_id)
+                pipeline_log(
+                    f"child poll step=deploy execution={execution.get('name')} outcome={outcome.value}"
+                )
+
             try:
-                final_execution = self._jobs_dispatcher.wait_for_execution(execution)
+                final_execution = self._jobs_dispatcher.wait_for_execution(
+                    execution_name,
+                    timeout_seconds=timeout,
+                    on_poll=_on_poll,
+                )
             except TimeoutError as exc:
-                return PipelineStepResult(
-                    step=PipelineStep.DEPLOY.value,
-                    status="failed",
+                return self._step_result_from_execution(
+                    step=PipelineStep.DEPLOY,
                     job_id=job_id,
-                    cloud_run_execution=execution,
+                    dispatch=dispatch,
+                    execution={"name": execution_name},
+                    status="failed",
                     error=str(exc),
                 )
             if not self._jobs_dispatcher.execution_succeeded(final_execution):
-                return PipelineStepResult(
-                    step=PipelineStep.DEPLOY.value,
-                    status="failed",
+                return self._step_result_from_execution(
+                    step=PipelineStep.DEPLOY,
                     job_id=job_id,
-                    cloud_run_execution=execution,
+                    dispatch=dispatch,
+                    execution=final_execution,
+                    status="failed",
                     error=self._jobs_dispatcher.execution_failure_detail(final_execution),
                 )
             self._hydrate_after_cloud_step(client_id=client_id, step=PipelineStep.DEPLOY)
             manifest = read_active_manifest(active_manifest_path(self._clients_root, client_id))
-            return PipelineStepResult(
-                step=PipelineStep.DEPLOY.value,
-                status="succeeded",
+            return self._step_result_from_execution(
+                step=PipelineStep.DEPLOY,
                 job_id=job_id,
-                cloud_run_execution=execution,
+                dispatch=dispatch,
+                execution=final_execution,
+                status="succeeded",
                 result={
                     "activated_version": manifest.active,
                     "eval_run_id": gate.report.run_id if gate.report else None,

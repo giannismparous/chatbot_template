@@ -2,6 +2,17 @@
 
 Use after deploying API + worker images that include Phase 21A pipeline automation.
 
+**One-command smoke (recommended):**
+
+```bash
+export ADMIN_TOKEN="$(gcloud secrets versions access latest --secret=chatbot-admin-api-token --project=simasia-ai-chatbot-production)"
+export WIDGET_KEY='wk_...'   # optional, for chat smoke
+export OLD_PIPELINES='pipe_2fea8723ca1c'   # optional stale cleanup
+bash deploy/phase21a_prod_smoke.sh
+```
+
+The script builds images, updates all jobs (including `chatbot-pipeline`), deploys API, runs `ingest_eval` + `full_deploy` smoke, and prints PASS/FAIL.
+
 **Project:** `simasia-ai-chatbot-production`  
 **Region:** `europe-west1`  
 **Client:** `default`  

@@ -45,6 +45,7 @@ def _pipeline_dto(record: PipelineRunRecord) -> PipelineRunDTO:
                 cloud_run_execution=item.cloud_run_execution,
                 result=item.result,
                 error=item.error,
+                execution_meta=item.execution_meta,
             )
             for item in record.step_results
         ],
