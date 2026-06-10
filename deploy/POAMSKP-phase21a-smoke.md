@@ -13,6 +13,8 @@ bash deploy/phase21a_prod_smoke.sh
 
 The script builds images, updates all jobs (including `chatbot-pipeline`), deploys API, runs `ingest_eval` + `full_deploy` smoke, and prints PASS/FAIL.
 
+**Cloud Build note:** Cloud Shell `gcloud builds submit` does **not** support `--dockerfile`. The smoke script and manual steps below use temporary Cloud Build YAML configs (`/tmp/cloudbuild-*-phase21a.yaml`) instead. Do not use `gcloud builds submit --dockerfile=...`.
+
 **Project:** `simasia-ai-chatbot-production`  
 **Region:** `europe-west1`  
 **Client:** `default`  
@@ -44,9 +46,14 @@ export API_IMAGE=gcr.io/${PROJECT_ID}/simasia-chatbot-api:phase21a
 
 cd ~/chatbot_template   # repo root
 
-gcloud builds submit --project=${PROJECT_ID} \
-  --tag ${API_IMAGE} \
-  --dockerfile=deploy/Dockerfile.api .
+cat >/tmp/cloudbuild-api-phase21a.yaml <<EOF
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "deploy/Dockerfile.api", "-t", "${API_IMAGE}", "."]
+images:
+  - "${API_IMAGE}"
+EOF
+gcloud builds submit --project=${PROJECT_ID} --config=/tmp/cloudbuild-api-phase21a.yaml .
 
 gcloud run deploy simasia-chatbot-api \
   --project=${PROJECT_ID} \
@@ -68,9 +75,14 @@ gcloud run deploy simasia-chatbot-api \
 export WORKER_IMAGE=gcr.io/${PROJECT_ID}/simasia-chatbot-worker:phase21a
 export WORKER_SA=chatbot-worker@${PROJECT_ID}.iam.gserviceaccount.com
 
-gcloud builds submit --project=${PROJECT_ID} \
-  --tag ${WORKER_IMAGE} \
-  --dockerfile=deploy/Dockerfile.worker .
+cat >/tmp/cloudbuild-worker-phase21a.yaml <<EOF
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "deploy/Dockerfile.worker", "-t", "${WORKER_IMAGE}", "."]
+images:
+  - "${WORKER_IMAGE}"
+EOF
+gcloud builds submit --project=${PROJECT_ID} --config=/tmp/cloudbuild-worker-phase21a.yaml .
 
 # Child step jobs (unchanged entrypoints)
 for JOB in chatbot-pipeline chatbot-drive-sync chatbot-ingest chatbot-eval chatbot-deploy; do

@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Phase 21A production smoke — idempotent deploy + pipeline verification.
+#
+# PREFLIGHT: Do not use `gcloud builds submit --dockerfile=...` — Cloud Shell
+# gcloud does not support --dockerfile. This script uses temporary Cloud Build
+# YAML configs instead (see build_image_with_cloudbuild_yaml).
+#
 # Usage (Cloud Shell):
 #   export ADMIN_TOKEN="$(gcloud secrets versions access latest --secret=chatbot-admin-api-token)"
 #   export WIDGET_KEY="wk_..."   # optional; required for chat smoke
@@ -30,6 +35,36 @@ log() { echo "[phase21a-smoke] $*"; }
 fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
 pass() { log "PASS: $*"; PASS=$((PASS + 1)); }
 
+run_or_die() {
+  local label="$1"
+  shift
+  log "RUN: ${label}"
+  if "$@"; then
+    log "OK: ${label}"
+  else
+    local exit_code=$?
+    echo "[phase21a-smoke] FATAL: ${label} failed (exit ${exit_code})" >&2
+    exit "${exit_code}"
+  fi
+}
+
+# Cloud Shell gcloud builds submit does not support --dockerfile. Use YAML instead.
+build_image_with_cloudbuild_yaml() {
+  local dockerfile="$1"
+  local image="$2"
+  local config_path="$3"
+  cat >"${config_path}" <<EOF
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "${dockerfile}", "-t", "${image}", "."]
+images:
+  - "${image}"
+EOF
+  log "Wrote Cloud Build config ${config_path} for ${image}"
+  run_or_die "gcloud builds submit (${image})" \
+    gcloud builds submit --project="${PROJECT_ID}" --config="${config_path}" .
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 2; }
 }
@@ -47,22 +82,24 @@ fi
 log "project=${PROJECT_ID} region=${REGION} client=${CLIENT_ID} tag=${IMAGE_TAG}"
 
 log "Building worker image ${WORKER_IMAGE}"
-gcloud builds submit --project="${PROJECT_ID}" \
-  --tag "${WORKER_IMAGE}" \
-  --dockerfile=deploy/Dockerfile.worker .
+build_image_with_cloudbuild_yaml \
+  "deploy/Dockerfile.worker" \
+  "${WORKER_IMAGE}" \
+  "/tmp/cloudbuild-worker-phase21a.yaml"
 
 log "Building API image ${API_IMAGE}"
-gcloud builds submit --project="${PROJECT_ID}" \
-  --tag "${API_IMAGE}" \
-  --dockerfile=deploy/Dockerfile.api .
+build_image_with_cloudbuild_yaml \
+  "deploy/Dockerfile.api" \
+  "${API_IMAGE}" \
+  "/tmp/cloudbuild-api-phase21a.yaml"
 
 WORKER_ENV="STACK_PROFILE=firebase,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_BUCKET=${BUCKET},CLOUD_RUN_REGION=${REGION},FIRESTORE_CONTROL_PLANE=true,GCS_REGISTRY_FALLBACK=false,CLOUD_RUN_JOBS_DISABLED=false,CLOUD_RUN_JOBS_USE_GCLOUD=false,CLOUD_RUN_JOB_PREFIX=chatbot"
 
 update_child_job() {
   local job="$1"
   local args="$2"
-  log "Updating job ${job}"
-  gcloud run jobs update "${job}" \
+  run_or_die "gcloud run jobs update ${job}" \
+    gcloud run jobs update "${job}" \
     --project="${PROJECT_ID}" \
     --region="${REGION}" \
     --image="${WORKER_IMAGE}" \
@@ -83,8 +120,8 @@ if gcloud run jobs describe chatbot-pipeline --region="${REGION}" --project="${P
 else
   PIPELINE_ACTION=create
 fi
-log "${PIPELINE_ACTION} chatbot-pipeline job"
-gcloud run jobs "${PIPELINE_ACTION}" chatbot-pipeline \
+run_or_die "gcloud run jobs ${PIPELINE_ACTION} chatbot-pipeline" \
+  gcloud run jobs "${PIPELINE_ACTION}" chatbot-pipeline \
   --project="${PROJECT_ID}" \
   --region="${REGION}" \
   --image="${WORKER_IMAGE}" \
@@ -95,7 +132,8 @@ gcloud run jobs "${PIPELINE_ACTION}" chatbot-pipeline \
   --memory=2Gi --cpu=2 --task-timeout=7200 --max-retries=0
 
 log "Deploying API ${API_SERVICE}"
-gcloud run deploy "${API_SERVICE}" \
+run_or_die "gcloud run deploy ${API_SERVICE}" \
+  gcloud run deploy "${API_SERVICE}" \
   --project="${PROJECT_ID}" \
   --region="${REGION}" \
   --image="${API_IMAGE}" \
@@ -219,10 +257,11 @@ if [[ -n "${FULL_DEPLOY_BODY:-}" ]]; then
   validate_full_deploy "${FULL_DEPLOY_BODY}"
   if [[ "$(echo "${FULL_DEPLOY_BODY}" | jq -r '.status')" == "succeeded" ]]; then
     log "Refreshing API runtime after deploy"
-    gcloud run services update "${API_SERVICE}" \
+    run_or_die "gcloud run services update ${API_SERVICE} (runtime refresh)" \
+      gcloud run services update "${API_SERVICE}" \
       --project="${PROJECT_ID}" \
       --region="${REGION}" \
-      --update-env-vars="PIPELINE_REFRESH_TS=$(date -u +%Y%m%dT%H%M%SZ)" >/dev/null
+      --update-env-vars="PIPELINE_REFRESH_TS=$(date -u +%Y%m%dT%H%M%SZ)"
   fi
 fi
 
