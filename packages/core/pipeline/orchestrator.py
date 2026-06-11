@@ -32,7 +32,7 @@ from packages.adapters.cloudrun.jobs_dispatcher import (
     DispatchResult,
     ExecutionOutcome,
 )
-from packages.core.pipeline.logging_util import pipeline_log
+from packages.core.pipeline.logging_util import pipeline_api_log, pipeline_log
 from packages.core.pipeline.stale import is_pipeline_stale, mark_pipeline_stale
 from packages.core.pipeline.timeouts import step_timeout_seconds
 
@@ -102,6 +102,9 @@ class PipelineOrchestrator:
             drive_source_ids=drive_source_ids,
         )
         self._pipeline_store.create(record)
+        pipeline_api_log(
+            f"create pipeline client={cid} pipeline_id={pipeline_id} preset={preset} steps={record.steps}"
+        )
 
         if self._sync_mode():
             self.execute_pipeline(client_id=cid, pipeline_id=pipeline_id)
@@ -110,8 +113,18 @@ class PipelineOrchestrator:
             return final
 
         if self._durable_runner_enabled():
-            self._dispatch_pipeline_runner(record)
-            return record
+            try:
+                self._dispatch_pipeline_runner(record)
+            except Exception as exc:
+                pipeline_api_log(f"dispatch failure pipeline_id={pipeline_id} error={exc}")
+                self.mark_failed(
+                    cid,
+                    pipeline_id,
+                    reason=f"Pipeline dispatch failed: {exc}",
+                )
+                raise RuntimeError(str(exc)) from exc
+            refreshed = self._pipeline_store.get(cid, pipeline_id)
+            return refreshed or record
 
         self._executor.submit(
             lambda: self.execute_pipeline(client_id=cid, pipeline_id=pipeline_id)
@@ -120,17 +133,21 @@ class PipelineOrchestrator:
 
     def _dispatch_pipeline_runner(self, record: PipelineRunRecord) -> None:
         assert self._jobs_dispatcher is not None
+        pipeline_api_log(
+            f"dispatch chatbot-pipeline start client={record.client_id} pipeline_id={record.pipeline_id}"
+        )
         dispatch = self._jobs_dispatcher.dispatch_pipeline_with_meta(
             client_id=record.client_id,
             pipeline_id=record.pipeline_id,
+            blocking_resolve=False,
         )
         record.runner_execution = dispatch.execution_name
         record.status = PipelineStatus.RUNNING
         record.started_at = utc_now()
         self._save(record)
-        pipeline_log(
-            f"dispatched pipeline runner client={record.client_id} pipeline_id={record.pipeline_id} "
-            f"operation={dispatch.operation_name} execution={dispatch.execution_name}"
+        pipeline_api_log(
+            f"dispatch success client={record.client_id} pipeline_id={record.pipeline_id} "
+            f"operation={dispatch.operation_name} runner_execution={dispatch.execution_name}"
         )
 
     def execute_pipeline(self, *, client_id: str, pipeline_id: str) -> PipelineRunRecord:

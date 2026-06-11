@@ -12,6 +12,12 @@ def pipeline_log(message: str) -> None:
     logger.info("%s", message)
 
 
+def pipeline_api_log(message: str) -> None:
+    line = f"[pipeline-api] {message}"
+    print(line, flush=True)
+    logger.info("%s", message)
+
+
 def pipeline_version_label() -> str:
     for key in ("GIT_SHA", "K_REVISION", "BUILD_ID", "APP_VERSION"):
         value = os.getenv(key, "").strip()

@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Phase 21A production smoke — idempotent deploy + pipeline verification.
 #
-# PREFLIGHT: Do not use `gcloud builds submit --dockerfile=...` — Cloud Shell
-# gcloud does not support --dockerfile. This script uses temporary Cloud Build
-# YAML configs instead (see build_image_with_cloudbuild_yaml).
+# PREFLIGHT: Do not use `gcloud builds submit --dockerfile=...` — use Cloud Build YAML.
 #
-# Usage (Cloud Shell):
-#   export ADMIN_TOKEN="$(gcloud secrets versions access latest --secret=chatbot-admin-api-token)"
+# Usage:
+#   export ADMIN_TOKEN="$(gcloud secrets versions access latest --secret=chatbot-admin-api-token --project=simasia-ai-chatbot-production)"
 #   export WIDGET_KEY="wk_..."   # optional; required for chat smoke
 #   export OLD_PIPELINES="pipe_abc,pipe_def"   # optional cleanup
 #   bash deploy/phase21a_prod_smoke.sh
@@ -24,7 +22,9 @@ API_IMAGE="gcr.io/${PROJECT_ID}/simasia-chatbot-api:${IMAGE_TAG}"
 WORKER_IMAGE="gcr.io/${PROJECT_ID}/simasia-chatbot-worker:${IMAGE_TAG}"
 PIPELINE_POLL_SECONDS="${PIPELINE_POLL_SECONDS:-30}"
 PIPELINE_TIMEOUT_SECONDS="${PIPELINE_TIMEOUT_SECONDS:-7200}"
+PIPELINE_RUN_TIMEOUT_SECONDS="${PIPELINE_RUN_TIMEOUT_SECONDS:-25}"
 CHAT_ORIGIN="${CHAT_ORIGIN:-https://www.poamskp.gr}"
+OLD_PIPELINES="${OLD_PIPELINES:-pipe_4e263452d0bb,pipe_65326a5de7f4,pipe_a1f6738b9065,pipe_2fea8723ca1c,pipe_bc77c4f88c72}"
 
 PASS=0
 FAIL=0
@@ -48,7 +48,6 @@ run_or_die() {
   fi
 }
 
-# Cloud Shell gcloud builds submit does not support --dockerfile. Use YAML instead.
 build_image_with_cloudbuild_yaml() {
   local dockerfile="$1"
   local image="$2"
@@ -67,6 +66,33 @@ EOF
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 2; }
+}
+
+is_json() {
+  python3 -c "import json,sys; json.loads(sys.stdin.read())" >/dev/null 2>&1
+}
+
+# curl_api METHOD URL [curl-args...]  -> sets HTTP_CODE and HTTP_BODY
+curl_api() {
+  local method="$1"
+  local url="$2"
+  shift 2
+  local tmp
+  tmp="$(mktemp)"
+  HTTP_CODE="$(curl -sS -o "${tmp}" -w '%{http_code}' -X "${method}" "${url}" "$@")"
+  HTTP_BODY="$(cat "${tmp}")"
+  rm -f "${tmp}"
+}
+
+jq_or_fail() {
+  local label="$1"
+  local body="$2"
+  if ! echo "${body}" | is_json; then
+    fail "${label} returned non-JSON (HTTP ${HTTP_CODE:-?})"
+    log "RAW BODY: ${body}"
+    return 1
+  fi
+  echo "${body}" | jq .
 }
 
 require_cmd gcloud
@@ -145,41 +171,55 @@ run_or_die "gcloud run deploy ${API_SERVICE}" \
 API_URL="$(gcloud run services describe "${API_SERVICE}" --region="${REGION}" --project="${PROJECT_ID}" --format='value(status.url)')"
 log "API_URL=${API_URL}"
 
-HEALTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${API_URL}/health")"
-if [[ "${HEALTH_CODE}" == "200" ]]; then
+curl_api GET "${API_URL}/health"
+if [[ "${HTTP_CODE}" == "200" ]]; then
   pass "/health returned 200"
 else
-  fail "/health returned ${HEALTH_CODE}"
+  fail "/health returned ${HTTP_CODE}"
+  log "RAW BODY: ${HTTP_BODY}"
 fi
 
-if [[ -n "${OLD_PIPELINES:-}" ]]; then
+mark_old_pipelines_failed() {
   IFS=',' read -ra OLD_IDS <<< "${OLD_PIPELINES}"
   for pid in "${OLD_IDS[@]}"; do
     pid="$(echo "${pid}" | xargs)"
     [[ -z "${pid}" ]] && continue
-    log "Marking stale pipeline failed: ${pid}"
-    curl -s -X POST "${API_URL}/v1/admin/clients/${CLIENT_ID}/pipeline/status/${pid}/mark-failed" \
+    log "Marking stale pipeline failed (best-effort): ${pid}"
+    curl_api POST "${API_URL}/v1/admin/clients/${CLIENT_ID}/pipeline/status/${pid}/mark-failed" \
       -H "x-admin-token: ${ADMIN_TOKEN}" \
       -H "Content-Type: application/json" \
-      -d '{"reason":"Marked failed by phase21a_prod_smoke.sh"}' >/dev/null || true
+      -d '{"reason":"Marked failed by phase21a_prod_smoke.sh"}'
+    if [[ "${HTTP_CODE}" == "200" ]]; then
+      log "marked ${pid} failed"
+    elif [[ "${HTTP_CODE}" == "400" ]]; then
+      log "skip ${pid} (already terminal): ${HTTP_BODY}"
+    else
+      log "warn mark-failed ${pid} HTTP ${HTTP_CODE}: ${HTTP_BODY}"
+    fi
   done
-fi
+}
+mark_old_pipelines_failed
 
 poll_pipeline() {
   local pipeline_id="$1"
   local label="$2"
   local deadline=$(( $(date +%s) + PIPELINE_TIMEOUT_SECONDS ))
   while [[ $(date +%s) -lt ${deadline} ]]; do
-    local body
-    body="$(curl -s "${API_URL}/v1/admin/clients/${CLIENT_ID}/pipeline/status/${pipeline_id}" \
-      -H "x-admin-token: ${ADMIN_TOKEN}")"
+    curl_api GET "${API_URL}/v1/admin/clients/${CLIENT_ID}/pipeline/status/${pipeline_id}" \
+      -H "x-admin-token: ${ADMIN_TOKEN}"
+    if ! echo "${HTTP_BODY}" | is_json; then
+      fail "${label} status poll returned non-JSON HTTP ${HTTP_CODE}"
+      log "RAW BODY: ${HTTP_BODY}"
+      sleep "${PIPELINE_POLL_SECONDS}"
+      continue
+    fi
     local status current_step step_count
-    status="$(echo "${body}" | jq -r '.status')"
-    current_step="$(echo "${body}" | jq -r '.current_step // empty')"
-    step_count="$(echo "${body}" | jq -r '.step_results | length')"
+    status="$(echo "${HTTP_BODY}" | jq -r '.status')"
+    current_step="$(echo "${HTTP_BODY}" | jq -r '.current_step // empty')"
+    step_count="$(echo "${HTTP_BODY}" | jq -r '.step_results | length')"
     log "${label} poll pipeline=${pipeline_id} status=${status} current_step=${current_step:-none} step_results=${step_count}"
     if [[ "${status}" == "succeeded" || "${status}" == "failed" || "${status}" == "stale" ]]; then
-      echo "${body}"
+      echo "${HTTP_BODY}"
       return 0
     fi
     sleep "${PIPELINE_POLL_SECONDS}"
@@ -192,17 +232,28 @@ run_pipeline() {
   local preset="$1"
   local label="$2"
   log "Starting ${label} preset=${preset}"
-  local start_body
-  start_body="$(curl -s -X POST "${API_URL}/v1/admin/clients/${CLIENT_ID}/pipeline/run" \
+  curl_api POST "${API_URL}/v1/admin/clients/${CLIENT_ID}/pipeline/run" \
+    --max-time "${PIPELINE_RUN_TIMEOUT_SECONDS}" \
     -H "x-admin-token: ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "{\"preset\":\"${preset}\",\"eval_llm_mode\":\"live\"}")"
+    -d "{\"preset\":\"${preset}\",\"eval_llm_mode\":\"live\"}"
+  log "${label} POST /pipeline/run HTTP ${HTTP_CODE}"
+  if [[ "${HTTP_CODE}" != "202" ]]; then
+    fail "${label} expected HTTP 202, got ${HTTP_CODE}"
+    log "RAW BODY: ${HTTP_BODY}"
+    return 1
+  fi
+  if ! echo "${HTTP_BODY}" | is_json; then
+    fail "${label} /pipeline/run returned non-JSON"
+    log "RAW BODY: ${HTTP_BODY}"
+    return 1
+  fi
+  jq_or_fail "${label} /pipeline/run" "${HTTP_BODY}" >/dev/null
   local pipeline_id runner_execution
-  pipeline_id="$(echo "${start_body}" | jq -r '.pipeline_id')"
-  runner_execution="$(echo "${start_body}" | jq -r '.runner_execution // empty')"
+  pipeline_id="$(echo "${HTTP_BODY}" | jq -r '.pipeline_id')"
+  runner_execution="$(echo "${HTTP_BODY}" | jq -r '.runner_execution // empty')"
   if [[ -z "${pipeline_id}" || "${pipeline_id}" == "null" ]]; then
     fail "${label} did not return pipeline_id"
-    echo "${start_body}"
     return 1
   fi
   log "${label} pipeline_id=${pipeline_id} runner_execution=${runner_execution:-unknown}"
@@ -211,7 +262,7 @@ run_pipeline() {
 
 validate_ingest_eval() {
   local body="$1"
-  echo "${body}" | jq .
+  jq_or_fail "ingest_eval final status" "${body}"
   local status step_count chunks eval_status deploy_eligible
   status="$(echo "${body}" | jq -r '.status')"
   step_count="$(echo "${body}" | jq -r '.step_results | length')"
@@ -227,7 +278,7 @@ validate_ingest_eval() {
 
 validate_full_deploy() {
   local body="$1"
-  echo "${body}" | jq .
+  jq_or_fail "full_deploy final status" "${body}"
   local status step_count error_msg
   status="$(echo "${body}" | jq -r '.status')"
   step_count="$(echo "${body}" | jq -r '.step_results | length')"
@@ -255,7 +306,7 @@ fi
 FULL_DEPLOY_BODY="$(run_pipeline full_deploy full_deploy || true)"
 if [[ -n "${FULL_DEPLOY_BODY:-}" ]]; then
   validate_full_deploy "${FULL_DEPLOY_BODY}"
-  if [[ "$(echo "${FULL_DEPLOY_BODY}" | jq -r '.status')" == "succeeded" ]]; then
+  if echo "${FULL_DEPLOY_BODY}" | is_json && [[ "$(echo "${FULL_DEPLOY_BODY}" | jq -r '.status')" == "succeeded" ]]; then
     log "Refreshing API runtime after deploy"
     run_or_die "gcloud run services update ${API_SERVICE} (runtime refresh)" \
       gcloud run services update "${API_SERVICE}" \
@@ -267,17 +318,22 @@ fi
 
 if [[ -n "${WIDGET_KEY:-}" ]]; then
   log "Running chat smoke"
-  CHAT_BODY="$(curl -s -X POST "${API_URL}/v2/chat/respond" \
+  curl_api POST "${API_URL}/v2/chat/respond" \
     -H "Content-Type: application/json" \
     -H "x-client-key: ${WIDGET_KEY}" \
     -H "Origin: ${CHAT_ORIGIN}" \
-    -d '{"message":"Τι είναι η ΠΟΑμΣΚΠ;"}')"
-  CHAT_ANSWER="$(echo "${CHAT_BODY}" | jq -r '.answer // empty')"
-  if [[ -n "${CHAT_ANSWER}" ]]; then
-    pass "chat smoke returned an answer"
-    echo "${CHAT_BODY}" | jq '{answer,sources,confidence}'
+    -d '{"message":"Τι είναι η ΠΟΑμΣΚΠ;"}'
+  if echo "${HTTP_BODY}" | is_json; then
+    CHAT_ANSWER="$(echo "${HTTP_BODY}" | jq -r '.answer // empty')"
+    if [[ -n "${CHAT_ANSWER}" ]]; then
+      pass "chat smoke returned an answer"
+      echo "${HTTP_BODY}" | jq '{answer,sources,confidence}'
+    else
+      fail "chat smoke returned empty answer"
+    fi
   else
-    fail "chat smoke returned empty answer"
+    fail "chat smoke returned non-JSON HTTP ${HTTP_CODE}"
+    log "RAW BODY: ${HTTP_BODY}"
   fi
 else
   log "WIDGET_KEY not set; skipping chat smoke"

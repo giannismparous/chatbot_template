@@ -82,6 +82,11 @@ def run_client_pipeline(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Pipeline dispatch failed: {exc}",
+        ) from exc
     return PipelineRunAcceptedDTO(
         pipeline_id=record.pipeline_id,
         client_id=record.client_id,

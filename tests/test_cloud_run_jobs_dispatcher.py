@@ -144,6 +144,26 @@ def test_wait_for_execution_timeout() -> None:
             )
 
 
+def test_resolve_run_response_non_blocking_skips_operation_poll() -> None:
+    dispatcher = CloudRunJobsDispatcher(project="demo", region="europe-west1")
+    operation_name = "projects/demo/locations/europe-west1/operations/op-fast"
+    run_response = {"name": operation_name, "done": False}
+
+    with patch.object(
+        dispatcher,
+        "wait_for_operation",
+        side_effect=AssertionError("must not poll in non-blocking mode"),
+    ):
+        result = dispatcher.resolve_run_response(
+            job_type=JobType.INGEST,
+            run_response=run_response,
+            blocking=False,
+        )
+
+    assert result.operation_name == operation_name
+    assert result.execution_name == operation_name
+
+
 def test_dispatch_with_meta_resolves_operation_to_execution() -> None:
     dispatcher = _dispatcher()
     operation_name = "projects/demo/locations/europe-west1/operations/op-run"

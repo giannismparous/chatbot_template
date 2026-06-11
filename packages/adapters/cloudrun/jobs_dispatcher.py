@@ -107,7 +107,7 @@ class CloudRunJobsDispatcher:
             ) from exc
         return data if isinstance(data, dict) else {}
 
-    def _api_post(self, url: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _api_post(self, url: str, body: dict[str, Any], *, timeout_seconds: float = 30) -> dict[str, Any]:
         payload = json.dumps(body).encode("utf-8")
         request = urllib.request.Request(
             url,
@@ -119,7 +119,7 @@ class CloudRunJobsDispatcher:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -180,11 +180,19 @@ class CloudRunJobsDispatcher:
                 return name
         return ""
 
+    def _api_dispatch_resolve_seconds(self) -> float:
+        raw = os.getenv("CLOUD_RUN_API_DISPATCH_RESOLVE_SECONDS", "5").strip()
+        try:
+            return max(1.0, min(30.0, float(raw)))
+        except ValueError:
+            return 5.0
+
     def resolve_run_response(
         self,
         *,
         job_type: JobType,
         run_response: dict[str, Any],
+        blocking: bool = True,
     ) -> DispatchResult:
         job_name = self.job_name(job_type)
         name = str(run_response.get("name") or "")
@@ -204,10 +212,31 @@ class CloudRunJobsDispatcher:
             return result
         if self._is_operation_name(name) or "done" in run_response:
             result.operation_name = name
-            pipeline_log(f"jobs.run returned operation; polling: {name}")
+            if run_response.get("done"):
+                execution_name = self._execution_name_from_operation(run_response)
+                if execution_name:
+                    result.execution_name = execution_name
+                    pipeline_log(f"operation already done execution={execution_name}")
+                    return result
+            if not blocking:
+                op_meta = run_response.get("metadata")
+                if isinstance(op_meta, dict):
+                    meta_exec = str(op_meta.get("name") or "")
+                    if self._is_execution_name(meta_exec):
+                        result.execution_name = meta_exec
+                        pipeline_log(f"non-blocking dispatch metadata execution={meta_exec}")
+                        return result
+                result.execution_name = name
+                pipeline_log(f"non-blocking dispatch returning operation reference={name}")
+                return result
+            resolve_timeout = self._operation_timeout_seconds()
+            pipeline_log(
+                f"jobs.run returned operation; polling: {name} timeout={resolve_timeout}s"
+            )
             operation = self.wait_for_operation(
                 name,
-                timeout_seconds=self._operation_timeout_seconds(),
+                timeout_seconds=resolve_timeout,
+                poll_interval_seconds=2.0,
             )
             result.raw_run_response = operation
             execution_name = self._execution_name_from_operation(operation)
@@ -417,6 +446,7 @@ class CloudRunJobsDispatcher:
         job_id: str,
         eval_llm_mode: str | None = None,
         eval_suite: str | None = None,
+        blocking_resolve: bool = True,
     ) -> DispatchResult:
         use_gcloud = os.getenv("CLOUD_RUN_JOBS_USE_GCLOUD", "").strip().lower() in {
             "1",
@@ -441,6 +471,7 @@ class CloudRunJobsDispatcher:
             job_id=job_id,
             eval_llm_mode=eval_llm_mode,
             eval_suite=eval_suite,
+            blocking_resolve=blocking_resolve,
         )
 
     def dispatch(
@@ -487,6 +518,7 @@ class CloudRunJobsDispatcher:
         job_id: str,
         eval_llm_mode: str | None = None,
         eval_suite: str | None = None,
+        blocking_resolve: bool = True,
     ) -> DispatchResult:
         job_name = self.job_name(job_type)
         url = (
@@ -517,7 +549,11 @@ class CloudRunJobsDispatcher:
             f"dispatch POST job={job_name} region={self._region} client={client_id} job_id={job_id}"
         )
         run_response = self._api_post(url, body)
-        resolved = self.resolve_run_response(job_type=job_type, run_response=run_response)
+        resolved = self.resolve_run_response(
+            job_type=job_type,
+            run_response=run_response,
+            blocking=blocking_resolve,
+        )
         resolved.client_id = client_id
         if not resolved.execution_name:
             fallback = self.list_latest_execution(job_type)
@@ -547,7 +583,11 @@ class CloudRunJobsDispatcher:
         return result.execution_name
 
     def dispatch_pipeline_with_meta(
-        self, *, client_id: str, pipeline_id: str
+        self,
+        *,
+        client_id: str,
+        pipeline_id: str,
+        blocking_resolve: bool = False,
     ) -> DispatchResult:
         use_gcloud = os.getenv("CLOUD_RUN_JOBS_USE_GCLOUD", "").strip().lower() in {
             "1",
@@ -583,10 +623,15 @@ class CloudRunJobsDispatcher:
         return self._run_pipeline_via_api_with_meta(
             client_id=client_id,
             pipeline_id=pipeline_id,
+            blocking_resolve=blocking_resolve,
         )
 
     def _run_pipeline_via_api_with_meta(
-        self, *, client_id: str, pipeline_id: str
+        self,
+        *,
+        client_id: str,
+        pipeline_id: str,
+        blocking_resolve: bool = False,
     ) -> DispatchResult:
         job_name = self.job_name(JobType.PIPELINE)
         url = (
@@ -618,15 +663,21 @@ class CloudRunJobsDispatcher:
             f"dispatch pipeline POST job={job_name} client={client_id} pipeline_id={pipeline_id}"
         )
         run_response = self._api_post(url, body)
-        resolved = self.resolve_run_response(job_type=JobType.PIPELINE, run_response=run_response)
+        resolved = self.resolve_run_response(
+            job_type=JobType.PIPELINE,
+            run_response=run_response,
+            blocking=blocking_resolve,
+        )
         resolved.client_id = client_id
         if not resolved.execution_name:
             fallback = self.list_latest_execution(JobType.PIPELINE)
             if fallback:
                 resolved.execution_name = fallback
+        if not resolved.execution_name and resolved.operation_name:
+            resolved.execution_name = resolved.operation_name
         if not resolved.execution_name:
             raise RuntimeError(
-                f"Cloud Run pipeline dispatch returned no execution name for {job_name}"
+                f"Cloud Run pipeline dispatch returned no operation/execution for {job_name}"
             )
         logger.info(
             "Dispatched Cloud Run pipeline job=%s client=%s pipeline_id=%s execution=%s",

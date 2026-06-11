@@ -147,6 +147,7 @@ def test_start_dispatches_pipeline_runner_not_background_thread(pipeline_orchest
     dispatcher.dispatch_pipeline_with_meta.assert_called_once_with(
         client_id="tenant_a",
         pipeline_id=record.pipeline_id,
+        blocking_resolve=False,
     )
     orchestrator._executor.submit.assert_not_called()
 
